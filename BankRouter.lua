@@ -15,11 +15,9 @@ local function Print(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cff00ccff[BankRouter]|r " .. msg)
 end
 
--- Helper: Get Item Name from Link (FIXED)
--- Extracts the name cleanly using pattern matching instead of substring math
+-- Helper: Get Item Name from Link
 local function GetItemNameFromLink(link)
     if not link then return nil end
-    -- Finds the text inside the square brackets [Name]
     local _, _, name = string.find(link, "%[(.+)%]")
     return name
 end
@@ -86,7 +84,6 @@ end
 --  CONFIGURATION GUI
 -- =============================================================
 local function UpdateRouteList(scrollChild)
-    -- Clean up old frames
     local kids = {scrollChild:GetChildren()}
     for _, child in ipairs(kids) do
         child:Hide()
@@ -94,8 +91,6 @@ local function UpdateRouteList(scrollChild)
     end
 
     local yOffset = 0
-    
-    -- Iterate through the database table
     for itemName, recipientName in pairs(BankRouterDB.routes) do
         local row = CreateFrame("Frame", nil, scrollChild)
         row:SetWidth(260)
@@ -111,22 +106,16 @@ local function UpdateRouteList(scrollChild)
         delBtn:SetHeight(20)
         delBtn:SetPoint("RIGHT", row, "RIGHT", -5, 0)
         delBtn:SetText("X")
-        
-        -- FIX: Store the specific item name on the button itself
-        -- This prevents the "nil index" error by not relying on the loop variable
         delBtn.itemName = itemName 
         
         delBtn:SetScript("OnClick", function()
-            -- Retrieve the name from 'this' (the button that was clicked)
             local itemToDelete = this.itemName
-            
             if itemToDelete then
                 BankRouterDB.routes[itemToDelete] = nil
                 UpdateRouteList(scrollChild)
                 Print("Removed route for: " .. itemToDelete)
             end
         end)
-
         yOffset = yOffset - 22
     end
 end
@@ -182,7 +171,6 @@ local function CreateConfigFrame()
     addBtn:SetPoint("TOP", f, "TOP", 0, -85)
     addBtn:SetText("Add / Update Route")
 
-    -- Scroll Frame with Unique Name
     local scrollFrame = CreateFrame("ScrollFrame", "BankRouterConfigScrollFrame", f, "UIPanelScrollFrameTemplate")
     scrollFrame:SetPoint("TOPLEFT", f, "TOPLEFT", 15, -120)
     scrollFrame:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -35, 15)
@@ -221,7 +209,7 @@ QueueFrame:Hide()
 
 QueueFrame:SetScript("OnUpdate", function()
     timer = timer + arg1
-    if timer > 1.5 then
+    if timer > 1.0 then -- Process every 1 second
         timer = 0
         if currentQueueIndex > table.getn(queue) then
             QueueFrame:Hide()
@@ -232,31 +220,46 @@ QueueFrame:SetScript("OnUpdate", function()
 
         local task = queue[currentQueueIndex]
         
+        -- Select the Send Mail tab
         MailFrameTab2:Click()
-        SendMailNameEditBox:SetText("")
-        SendMailSubjectEditBox:SetText("")
+        
+        -- Fill Name and Subject
         SendMailNameEditBox:SetText(task.recipient)
         SendMailSubjectEditBox:SetText("BankRouter: " .. task.itemName)
         
-        local slotsFilled = 0
+        -- Try to attach items
+        local attemptedSlots = 0
         for i=1, 12 do
             if task.slots[i] then
                 local bag = task.slots[i].bag
                 local slot = task.slots[i].slot
+                
+                -- UseContainerItem simulates a Right-Click on the item
+                -- This is generally safer than Pickup/Click in Vanilla
                 local texture, count = GetContainerItemInfo(bag, slot)
                 if texture then
-                    PickupContainerItem(bag, slot)
-                    ClickSendMailItemButton(i)
-                    slotsFilled = slotsFilled + 1
+                    UseContainerItem(bag, slot)
+                    attemptedSlots = attemptedSlots + 1
                 end
             end
         end
 
-        if slotsFilled > 0 then
+        -- SAFETY CHECK: Did the items actually stick?
+        -- We check the first mail slot. If it's empty, the server/client hasn't synced yet.
+        local attachedName, attachedTexture, attachedCount, attachedQuality = GetSendMailItem(1)
+        
+        if attachedName then
+            -- Success! Items are attached.
             Print("Sending batch to " .. task.recipient .. "...")
-            SendMail(task.recipient, "BankRouter: " .. task.itemName, "Auto forwarded by BankRouter.")
+            SendMail(task.recipient, "BankRouter: " .. task.itemName, "Auto forwarded.")
+            
+            -- Important: We do not increment currentQueueIndex here.
+            -- We wait for the MAIL_SEND_SUCCESS event to do that.
         else
-            currentQueueIndex = currentQueueIndex + 1
+            -- Failure: No items in slot 1.
+            -- Do NOT send mail. Just wait for the next loop to try attaching again.
+            -- If we were using Pickup/Drop, we might need to clear cursor, but UseContainerItem is safe.
+            -- Print("Waiting for items to attach...") 
         end
     end
 end)
@@ -275,9 +278,6 @@ local function BuildMailQueue()
                 local name = GetItemNameFromLink(link)
                 local recipient = BankRouterDB.routes[name]
                 
-                -- Debug: Remove this comment if needed to check what the addon sees
-                -- if name == "Silk Cloth" then Print("Found Silk Cloth!") end
-
                 if recipient then
                     if not tasksByRecipient[recipient] then tasksByRecipient[recipient] = {} end
                     table.insert(tasksByRecipient[recipient], {bag=bag, slot=slot, name=name})
@@ -320,7 +320,7 @@ local function CreateMailboxButton()
     local btn = CreateFrame("Button", "BankRouterSendButton", MailFrame, "UIPanelButtonTemplate")
     btn:SetWidth(100)
     btn:SetHeight(25)
-    btn:SetPoint("TOPRIGHT", MailFrame, "TOPRIGHT", -60, -60)
+    btn:SetPoint("TOPLEFT", MailFrame, "TOPLEFT", 60, -15)
     btn:SetText("Router Send")
     
     btn:SetScript("OnClick", function()
@@ -344,6 +344,7 @@ BR:SetScript("OnEvent", function()
         
     elseif event == "MAIL_SEND_SUCCESS" then
         if isProcessing then
+            -- Only move to the next task after the server confirms the previous one was sent
             currentQueueIndex = currentQueueIndex + 1
         end
         
