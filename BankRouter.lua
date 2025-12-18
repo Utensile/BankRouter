@@ -1,9 +1,9 @@
 -- =============================================================
--- BANKROUTER v1.10 (STRICT ATTACHMENT CHECK)
+-- BANKROUTER v1.11 (API FIX & REORDERED)
 -- Fixes:
--- 1. Subject is now "" (Empty). Game will auto-fill from item.
--- 2. If item is not attached, SendMail is NEVER called.
--- 3. Bypasses TurtleMail hooks to ensure physical dropping.
+-- 1. Removed HookScript (caused crash in 1.12).
+-- 2. Reordered code so UI functions exist before Event Loop calls them.
+-- 3. Merged PLAYER_LOGIN logic into main handler.
 -- =============================================================
 
 -- CONFIGURATION & STATE
@@ -22,8 +22,8 @@ local function Print(msg)
 end
 
 local function Debug(msg)
-    -- Uncomment the next line to see debug messages
-    DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[V4]|r " .. msg)
+    -- Uncomment to see debug info
+    DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[DEBUG]|r " .. msg)
 end
 
 -- HOOK BYPASS
@@ -52,7 +52,7 @@ function BankRouter_InitDB()
 end
 
 -- =============================================================
--- CORE LOGIC
+-- CORE LOGIC (STATE MACHINE)
 -- =============================================================
 
 local function RunStateMachine(elapsed)
@@ -144,7 +144,6 @@ local function RunStateMachine(elapsed)
 
     -- STATE 4: SEND MAIL
     if currentState == "SEND_MAIL" then
-        -- Final Safety Check: Do not send if slot is empty
         if not GetSendMailItem() then
              Debug("CRITICAL: Slot became empty before send. Aborting.")
              currentState = "NEXT_ITEM"
@@ -153,9 +152,7 @@ local function RunStateMachine(elapsed)
 
         Debug("Sending to " .. currentWork.recipient)
         
-        -- We send with Subject = ""
-        -- The game will auto-fill the item name.
-        -- If the item is missing, the game will error "Enter a subject" and FAIL TO SEND (Good!)
+        -- Send with Subject = "" (Game auto-fills item name)
         SendMail(currentWork.recipient, "", "")
         
         waitTimer = 0
@@ -196,48 +193,7 @@ local function ScanBagsAndQueue()
 end
 
 -- =============================================================
--- EVENTS
--- =============================================================
-eventFrame:RegisterEvent("ADDON_LOADED")
-eventFrame:RegisterEvent("MAIL_SEND_SUCCESS")
-eventFrame:RegisterEvent("UI_ERROR_MESSAGE")
-eventFrame:RegisterEvent("MAIL_SHOW")
-
-eventFrame:SetScript("OnEvent", function()
-    if event == "ADDON_LOADED" and arg1 == "BankRouter" then
-        BankRouter_InitDB()
-    end
-    
-    if event == "MAIL_SHOW" and BankRouterBtn then 
-        BankRouterBtn:Show() 
-    end
-
-    if not processing then return end
-
-    if event == "MAIL_SEND_SUCCESS" then
-        Debug("Mail Sent!")
-        currentState = "NEXT_ITEM"
-        
-    elseif event == "UI_ERROR_MESSAGE" then
-        if arg1 == ERR_MAIL_TARGET_NOT_FOUND or arg1 == ERR_MAIL_MAILBOX_FULL then
-            processing = false
-            Print("Critical Error: " .. arg1)
-        elseif currentState == "WAITING_FOR_SERVER" then
-             -- If we get an error while waiting, assume send failed and move on
-             Debug("Send Error: " .. arg1)
-             currentState = "NEXT_ITEM"
-        end
-    end
-end)
-
-eventFrame:SetScript("OnUpdate", function()
-    if processing then
-        RunStateMachine(arg1)
-    end
-end)
-
--- =============================================================
--- UI SETUP
+-- UI SETUP (DEFINED BEFORE USE)
 -- =============================================================
 
 local function RefreshConfigList()
@@ -276,23 +232,41 @@ local function CreateConfigFrame()
     RefreshConfigList()
 end
 
+-- MINIMAP BUTTON
 local mmBtn = CreateFrame("Button", "BankRouterMinimapBtn", Minimap)
 mmBtn:SetFrameStrata("LOW"); mmBtn:SetWidth(32); mmBtn:SetHeight(32); mmBtn:SetPoint("CENTER", Minimap, "CENTER", -60, -60)
 local icon = mmBtn:CreateTexture(nil, "BACKGROUND"); icon:SetTexture("Interface\\Icons\\INV_Letter_15"); icon:SetWidth(20); icon:SetHeight(20); icon:SetPoint("CENTER", 0, 0)
 local border = mmBtn:CreateTexture(nil, "OVERLAY"); border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder"); border:SetWidth(52); border:SetHeight(52); border:SetPoint("TOPLEFT", 0, 0)
-mmBtn:SetScript("OnClick", function() BankRouter_InitDB(); CreateConfigFrame(); if configFrame:IsVisible() then configFrame:Hide() else configFrame:Show() end end)
+
+-- Minimap Functions
 local function UpdateMinimapPosition()
+    if not BankRouterDB then return end
     local angle = math.rad(BankRouterDB.minimapPos or 45)
     local x, y = math.cos(angle), math.sin(angle)
     mmBtn:SetPoint("CENTER", Minimap, "CENTER", x * 80, y * 80)
 end
+
 mmBtn:SetMovable(true); mmBtn:RegisterForDrag("LeftButton")
 mmBtn:SetScript("OnDragStart", function() this:LockHighlight(); this.isDragging = true end)
 mmBtn:SetScript("OnDragStop", function() this:UnlockHighlight(); this.isDragging = false end)
-mmBtn:SetScript("OnUpdate", function() if this.isDragging then local mx, my = Minimap:GetCenter(); local px, py = GetCursorPosition(); local scale = UIParent:GetScale(); px, py = px / scale, py / scale; local angle = math.deg(math.atan2(py - my, px - mx)); BankRouterDB.minimapPos = angle; UpdateMinimapPosition() end end)
-eventFrame:RegisterEvent("PLAYER_LOGIN") -- For Minimap
-eventFrame:HookScript("OnEvent", function() if event == "PLAYER_LOGIN" then UpdateMinimapPosition() end end)
+mmBtn:SetScript("OnUpdate", function() 
+    if this.isDragging then 
+        local mx, my = Minimap:GetCenter(); 
+        local px, py = GetCursorPosition(); 
+        local scale = UIParent:GetScale(); 
+        px, py = px / scale, py / scale; 
+        local angle = math.deg(math.atan2(py - my, px - mx)); 
+        BankRouterDB.minimapPos = angle; 
+        UpdateMinimapPosition() 
+    end 
+end)
+mmBtn:SetScript("OnClick", function() 
+    BankRouter_InitDB(); 
+    CreateConfigFrame(); 
+    if configFrame:IsVisible() then configFrame:Hide() else configFrame:Show() end 
+end)
 
+-- MAILBOX BUTTON
 local btn = CreateFrame("Button", "BankRouterBtn", MailFrame, "UIPanelButtonTemplate")
 btn:SetWidth(120); btn:SetHeight(25); btn:SetPoint("TOPRIGHT", MailFrame, "TOPRIGHT", -50, -40); btn:SetText("Auto Route")
 btn:SetScript("OnClick", function() if processing then processing = false; Print("Stopped.") else ScanBagsAndQueue() end end)
@@ -303,3 +277,50 @@ function MailFrameTab_OnClick(tab)
     if not tab then tab = this:GetID() end
     if tab == 1 then BankRouterBtn:Show() else BankRouterBtn:Hide() end
 end
+
+-- =============================================================
+-- EVENTS (MOVED TO BOTTOM TO ENSURE FUNCTIONS EXIST)
+-- =============================================================
+eventFrame:RegisterEvent("ADDON_LOADED")
+eventFrame:RegisterEvent("PLAYER_LOGIN")
+eventFrame:RegisterEvent("MAIL_SEND_SUCCESS")
+eventFrame:RegisterEvent("UI_ERROR_MESSAGE")
+eventFrame:RegisterEvent("MAIL_SHOW")
+
+eventFrame:SetScript("OnEvent", function()
+    -- DB Init
+    if event == "ADDON_LOADED" and arg1 == "BankRouter" then
+        BankRouter_InitDB()
+    elseif event == "PLAYER_LOGIN" then
+        -- This is safe to call now because UpdateMinimapPosition is defined above
+        UpdateMinimapPosition()
+    end
+    
+    -- UI Visibility
+    if event == "MAIL_SHOW" and BankRouterBtn then 
+        BankRouterBtn:Show() 
+    end
+
+    -- Core Logic
+    if not processing then return end
+
+    if event == "MAIL_SEND_SUCCESS" then
+        Debug("Mail Sent!")
+        currentState = "NEXT_ITEM"
+        
+    elseif event == "UI_ERROR_MESSAGE" then
+        if arg1 == ERR_MAIL_TARGET_NOT_FOUND or arg1 == ERR_MAIL_MAILBOX_FULL then
+            processing = false
+            Print("Critical Error: " .. arg1)
+        elseif currentState == "WAITING_FOR_SERVER" then
+             Debug("Send Error: " .. arg1)
+             currentState = "NEXT_ITEM"
+        end
+    end
+end)
+
+eventFrame:SetScript("OnUpdate", function()
+    if processing then
+        RunStateMachine(arg1)
+    end
+end)
