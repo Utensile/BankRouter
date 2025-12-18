@@ -199,9 +199,9 @@ end
 local function PrepareNextBatch()
     -- 0. SAFETY CHECK: IS MAIL ALREADY FULL?
     -- If slot 1 has an item, we are still waiting for the user to click Send.
-    local attachedName = GetSendMailItem(1)
-    if attachedName then
-        Print("Mail is already filled! Please click Send (or clear mail) before preparing next batch.")
+    local currentName = SendMailNameEditBox:GetText()
+    if currentName and currentName ~= "" then
+        Print("Mailbox is busy (Name field is not empty). Please Send or Clear.  ->" .. currenName)
         return
     end
 
@@ -220,14 +220,14 @@ local function PrepareNextBatch()
                 local link = GetContainerItemLink(bag, slot)
                 local name = GetItemNameFromLink(link)
                 local routeRecipient = BankRouterDB.routes[name]
-                
+                print("Item: " .. name .. "Recipient: " .. routeRecipient)
                 -- Is there a route? And are we NOT mailing ourselves?
                 if routeRecipient and routeRecipient ~= myName then
                     
                     -- Logic:
                     -- If we haven't picked a target yet, pick this one.
                     -- If we HAVE picked a target, only add items if they match that target.
-                    
+                    print("Valid Recipeint detected: ".. routeRecipient)
                     if not targetRecipient then
                         targetRecipient = routeRecipient
                         targetSubject = name -- Use first item name as subject
@@ -238,6 +238,8 @@ local function PrepareNextBatch()
                             table.insert(itemsToAttach, {bag=bag, slot=slot})
                         end
                     end
+
+                    print("targetRecipient: " .. targetRecipient)
                 end
             end
         end
