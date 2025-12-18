@@ -1,7 +1,7 @@
 -- =============================================================
 -- BANKROUTER
 -- Automated Item Mailing for Turtle WoW (Vanilla 1.12.1)
--- Logic adapted from TurtleMail (Event-driven instead of Timer)
+-- Logic: Event-driven (Fastest possible safe speed)
 -- =============================================================
 
 -- CONFIGURATION
@@ -46,6 +46,7 @@ local function ProcessNextItem()
         -- Clear fields
         SendMailNameEditBox:SetText("")
         SendMailSubjectEditBox:SetText("")
+        SendMailBodyEditBox:SetText("") -- Clear body text
         
         -- Switch to Send tab
         MailFrameTab2:Click()
@@ -54,8 +55,10 @@ local function ProcessNextItem()
         PickupContainerItem(work.bag, work.slot)
         ClickSendMailItemButton()
         
-        -- Send
-        SendMail(work.recipient, work.name, "BankRouter Auto-Send")
+        -- Send with NO body text
+        -- Args: Recipient, Subject, Body
+        SendMail(work.recipient, work.name, "") 
+        
         Print("Sent " .. work.name .. " to " .. work.recipient)
         
         -- We remain in 'processing' state, but wait for the event to trigger the next one
@@ -108,12 +111,10 @@ eventFrame:SetScript("OnEvent", function()
 
     if event == "MAIL_SEND_SUCCESS" then
         -- Success! Flag the OnUpdate loop to send the next one.
-        -- We use a flag instead of calling directly to avoid stack overflow or script limits.
         pendingSend = true
         
     elseif event == "UI_ERROR_MESSAGE" then
         -- If we get an error (bag full, target not found), stop immediately.
-        -- Common errors: ERR_MAIL_TARGET_NOT_FOUND, ERR_MAIL_MAILBOX_FULL
         if arg1 == ERR_MAIL_TARGET_NOT_FOUND or arg1 == ERR_MAIL_MAILBOX_FULL then
             processing = false
             pendingSend = false
@@ -150,4 +151,4 @@ btn:SetScript("OnClick", function()
     end
 end)
 
-Print("BankRouter (Event Mode) Loaded.")
+Print("BankRouter (Silent Mode) Loaded.")
