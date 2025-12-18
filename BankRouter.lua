@@ -11,9 +11,9 @@ local queue = {}
 local currentQueueIndex = 0
 
 -- Logic States
-local STATE_PREPARE = 1
-local STATE_WAITING_FOR_ATTACHMENT = 2
-local currentState = STATE_PREPARE
+local STATE_ATTACH = 1
+local STATE_SEND = 2
+local currentState = STATE_ATTACH
 local stateTimer = 0
 
 -- Helper: Print to Chat
@@ -224,11 +224,10 @@ QueueFrame:SetScript("OnUpdate", function()
 
     local task = queue[currentQueueIndex]
     
-    -- STATE 1: PREPARE AND ATTACH
-    if currentState == STATE_PREPARE then
+    -- STATE 1: ATTACH ITEMS
+    if currentState == STATE_ATTACH then
         timer = timer + arg1
-        if timer > 0.8 then -- Initial small delay
-            timer = 0
+        if timer > 0.5 then -- Short delay before starting
             
             MailFrameTab2:Click()
             SendMailNameEditBox:SetText(task.recipient)
@@ -247,37 +246,27 @@ QueueFrame:SetScript("OnUpdate", function()
                 end
             end
             
-            -- Move to next state: Wait for them to appear
-            currentState = STATE_WAITING_FOR_ATTACHMENT
-            stateTimer = 0 -- Reset safeguard timer
+            -- Immediately switch to SEND state, but reset timer
+            currentState = STATE_SEND
+            timer = 0
+            Print("Attaching " .. attemptedSlots .. " items...")
         end
 
-    -- STATE 2: WAIT FOR CONFIRMATION THEN SEND
-    elseif currentState == STATE_WAITING_FOR_ATTACHMENT then
-        stateTimer = stateTimer + arg1
+    -- STATE 2: WAIT THEN SEND (BLIND TRUST)
+    elseif currentState == STATE_SEND then
+        timer = timer + arg1
         
-        -- Check if item 1 is attached yet
-        local attachedName = GetSendMailItem(1)
-        
-        if attachedName then
-            -- FOUND IT! Auto-Send immediately.
-            Print("Items attached. Sending to " .. task.recipient .. "...")
+        -- WAIT 1.0 SECOND strictly to allow server sync
+        if timer > 1.0 then
+            Print("Sending to " .. task.recipient .. "...")
             SendMail(task.recipient, "BankRouter: " .. task.itemName, "Auto forwarded.")
             
-            -- Now we wait for MAIL_SEND_SUCCESS to increment queue
-            -- To prevent spamming SendMail, we just sit here until the event fires
-            -- If for some reason the event never fires (lag), we timeout after 5s
-            if stateTimer > 5 then
-                 Print("Timed out waiting for server. Retrying...")
-                 currentState = STATE_PREPARE
-                 timer = 0
-            end
-        else
-            -- Not found yet. Keep waiting.
-            -- If we wait too long (3 seconds) without seeing items, retry attaching
-            if stateTimer > 3.0 then
-                Print("Items didn't attach. Retrying...")
-                currentState = STATE_PREPARE
+            -- We stop here and wait for MAIL_SEND_SUCCESS to trigger the next batch
+            -- But we add a safety timeout just in case the event never fires
+            if timer > 5.0 then
+                Print("Forcing next batch (Event timeout)...")
+                currentQueueIndex = currentQueueIndex + 1
+                currentState = STATE_ATTACH
                 timer = 0
             end
         end
@@ -287,9 +276,8 @@ end)
 local function BuildMailQueue()
     queue = {}
     currentQueueIndex = 1
-    currentState = STATE_PREPARE
+    currentState = STATE_ATTACH
     timer = 0
-    stateTimer = 0
     
     local tasksByRecipient = {} 
     local foundCount = 0
@@ -367,10 +355,10 @@ BR:SetScript("OnEvent", function()
         
     elseif event == "MAIL_SEND_SUCCESS" then
         if isProcessing then
-            -- Mail sent successfully. Move to next task.
+            -- Success! Move to next immediately
             currentQueueIndex = currentQueueIndex + 1
-            currentState = STATE_PREPARE -- Reset state for next mail
-            timer = 0 -- Reset timer so we don't start next mail instantly
+            currentState = STATE_ATTACH
+            timer = 0
         end
         
     elseif event == "MAIL_CLOSED" then
