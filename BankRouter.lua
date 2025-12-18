@@ -10,6 +10,12 @@ local isProcessing = false
 local queue = {}
 local currentQueueIndex = 0
 
+-- Logic States
+local STATE_PREPARE = 1
+local STATE_WAITING_FOR_ATTACHMENT = 2
+local currentState = STATE_PREPARE
+local stateTimer = 0
+
 -- Helper: Print to Chat
 local function Print(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cff00ccff[BankRouter]|r " .. msg)
@@ -208,58 +214,72 @@ local QueueFrame = CreateFrame("Frame")
 QueueFrame:Hide()
 
 QueueFrame:SetScript("OnUpdate", function()
-    timer = timer + arg1
-    if timer > 1.0 then -- Process every 1 second
-        timer = 0
-        if currentQueueIndex > table.getn(queue) then
-            QueueFrame:Hide()
-            isProcessing = false
-            Print("Done routing items.")
-            return
-        end
+    -- Only run logic if we have tasks
+    if currentQueueIndex > table.getn(queue) then
+        QueueFrame:Hide()
+        isProcessing = false
+        Print("Done routing items.")
+        return
+    end
 
-        local task = queue[currentQueueIndex]
-        
-        -- Select the Send Mail tab
-        MailFrameTab2:Click()
-        
-        -- Fill Name and Subject
-        SendMailNameEditBox:SetText(task.recipient)
-        SendMailSubjectEditBox:SetText("BankRouter: " .. task.itemName)
-        
-        -- Try to attach items
-        local attemptedSlots = 0
-        for i=1, 12 do
-            if task.slots[i] then
-                local bag = task.slots[i].bag
-                local slot = task.slots[i].slot
-                
-                -- UseContainerItem simulates a Right-Click on the item
-                -- This is generally safer than Pickup/Click in Vanilla
-                local texture, count = GetContainerItemInfo(bag, slot)
-                if texture then
-                    UseContainerItem(bag, slot)
-                    attemptedSlots = attemptedSlots + 1
+    local task = queue[currentQueueIndex]
+    
+    -- STATE 1: PREPARE AND ATTACH
+    if currentState == STATE_PREPARE then
+        timer = timer + arg1
+        if timer > 0.8 then -- Initial small delay
+            timer = 0
+            
+            MailFrameTab2:Click()
+            SendMailNameEditBox:SetText(task.recipient)
+            SendMailSubjectEditBox:SetText("BankRouter: " .. task.itemName)
+            
+            local attemptedSlots = 0
+            for i=1, 12 do
+                if task.slots[i] then
+                    local bag = task.slots[i].bag
+                    local slot = task.slots[i].slot
+                    local texture, count = GetContainerItemInfo(bag, slot)
+                    if texture then
+                        UseContainerItem(bag, slot)
+                        attemptedSlots = attemptedSlots + 1
+                    end
                 end
             end
+            
+            -- Move to next state: Wait for them to appear
+            currentState = STATE_WAITING_FOR_ATTACHMENT
+            stateTimer = 0 -- Reset safeguard timer
         end
 
-        -- SAFETY CHECK: Did the items actually stick?
-        -- We check the first mail slot. If it's empty, the server/client hasn't synced yet.
-        local attachedName, attachedTexture, attachedCount, attachedQuality = GetSendMailItem(1)
+    -- STATE 2: WAIT FOR CONFIRMATION THEN SEND
+    elseif currentState == STATE_WAITING_FOR_ATTACHMENT then
+        stateTimer = stateTimer + arg1
+        
+        -- Check if item 1 is attached yet
+        local attachedName = GetSendMailItem(1)
         
         if attachedName then
-            -- Success! Items are attached.
-            Print("Sending batch to " .. task.recipient .. "...")
+            -- FOUND IT! Auto-Send immediately.
+            Print("Items attached. Sending to " .. task.recipient .. "...")
             SendMail(task.recipient, "BankRouter: " .. task.itemName, "Auto forwarded.")
             
-            -- Important: We do not increment currentQueueIndex here.
-            -- We wait for the MAIL_SEND_SUCCESS event to do that.
+            -- Now we wait for MAIL_SEND_SUCCESS to increment queue
+            -- To prevent spamming SendMail, we just sit here until the event fires
+            -- If for some reason the event never fires (lag), we timeout after 5s
+            if stateTimer > 5 then
+                 Print("Timed out waiting for server. Retrying...")
+                 currentState = STATE_PREPARE
+                 timer = 0
+            end
         else
-            -- Failure: No items in slot 1.
-            -- Do NOT send mail. Just wait for the next loop to try attaching again.
-            -- If we were using Pickup/Drop, we might need to clear cursor, but UseContainerItem is safe.
-            -- Print("Waiting for items to attach...") 
+            -- Not found yet. Keep waiting.
+            -- If we wait too long (3 seconds) without seeing items, retry attaching
+            if stateTimer > 3.0 then
+                Print("Items didn't attach. Retrying...")
+                currentState = STATE_PREPARE
+                timer = 0
+            end
         end
     end
 end)
@@ -267,6 +287,9 @@ end)
 local function BuildMailQueue()
     queue = {}
     currentQueueIndex = 1
+    currentState = STATE_PREPARE
+    timer = 0
+    stateTimer = 0
     
     local tasksByRecipient = {} 
     local foundCount = 0
@@ -305,7 +328,7 @@ local function BuildMailQueue()
     end
 
     if table.getn(queue) > 0 then
-        Print("Found " .. foundCount .. " items to route. Starting...")
+        Print("Found " .. foundCount .. " items. Starting...")
         isProcessing = true
         QueueFrame:Show()
     else
@@ -344,8 +367,10 @@ BR:SetScript("OnEvent", function()
         
     elseif event == "MAIL_SEND_SUCCESS" then
         if isProcessing then
-            -- Only move to the next task after the server confirms the previous one was sent
+            -- Mail sent successfully. Move to next task.
             currentQueueIndex = currentQueueIndex + 1
+            currentState = STATE_PREPARE -- Reset state for next mail
+            timer = 0 -- Reset timer so we don't start next mail instantly
         end
         
     elseif event == "MAIL_CLOSED" then
