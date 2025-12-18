@@ -1,43 +1,43 @@
 -- =============================================================
--- BANKROUTER v1.8 (TURTLEMAIL BYPASS)
--- Fix: Detects TurtleMail and uses its stored 'original' function
--- to bypass the hook that prevents items from dropping into the slot.
+-- BANKROUTER v1.10 (STRICT ATTACHMENT CHECK)
+-- Fixes:
+-- 1. Subject is now "" (Empty). Game will auto-fill from item.
+-- 2. If item is not attached, SendMail is NEVER called.
+-- 3. Bypasses TurtleMail hooks to ensure physical dropping.
 -- =============================================================
 
 -- CONFIGURATION & STATE
--- -------------------------------------------------------------
 local mailQueue = {}
 local processing = false
 local currentState = "IDLE" 
 local currentWork = nil
 local eventFrame = CreateFrame("Frame")
 local delayTimer = 0 
+local waitTimer = 0
 local configFrame, scrollChild
 
 -- UTILITIES
--- -------------------------------------------------------------
 local function Print(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cff00ccff[BankRouter]|r " .. msg)
 end
 
 local function Debug(msg)
-    DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[DEBUGV3]|r " .. msg)
+    -- Uncomment the next line to see debug messages
+    DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[V4]|r " .. msg)
 end
 
--- CRITICAL FIX: Get the Real 'Click' Function
--- -------------------------------------------------------------
+-- HOOK BYPASS
+-- We use this to force the item to drop into the physical slot,
+-- ignoring TurtleMail's virtual attachment system.
 local function Real_ClickSendMailItemButton()
-    -- If TurtleMail is loaded, it hides the real function inside .orig
     if TurtleMail and TurtleMail.orig and TurtleMail.orig.ClickSendMailItemButton then
         TurtleMail.orig.ClickSendMailItemButton()
     else
-        -- Otherwise, use the standard global function
         ClickSendMailItemButton()
     end
 end
 
 -- DATABASE INIT
--- -------------------------------------------------------------
 function BankRouter_InitDB()
     if not BankRouterDB then BankRouterDB = {} end
     if BankRouterDB.routes == nil then
@@ -52,7 +52,7 @@ function BankRouter_InitDB()
 end
 
 -- =============================================================
--- CORE LOGIC (STATE MACHINE)
+-- CORE LOGIC
 -- =============================================================
 
 local function RunStateMachine(elapsed)
@@ -69,6 +69,16 @@ local function RunStateMachine(elapsed)
         delayTimer = delayTimer - elapsed
         if delayTimer <= 0 then
             currentState = "ATTACH_ITEM" 
+        end
+        return
+    end
+
+    -- STATE: WAITING_FOR_SERVER
+    if currentState == "WAITING_FOR_SERVER" then
+        waitTimer = waitTimer + elapsed
+        if waitTimer > 4.0 then
+            Debug("TIMEOUT: Server didn't respond. Moving to next.")
+            currentState = "NEXT_ITEM"
         end
         return
     end
@@ -99,10 +109,10 @@ local function RunStateMachine(elapsed)
         SendMailBodyEditBox:SetText("")
         
         ClearCursor()
-        Real_ClickSendMailItemButton() -- Use BYPASS function
+        Real_ClickSendMailItemButton() -- Clean slot
         ClearCursor()
         
-        delayTimer = 0.3
+        delayTimer = 0.3 -- Short pause for UI update
         currentState = "WAIT_DELAY"
         return
     end
@@ -112,20 +122,20 @@ local function RunStateMachine(elapsed)
         PickupContainerItem(currentWork.bag, currentWork.slot)
         
         if not CursorHasItem() then
-            Debug("FAILED: Cursor empty. Retrying...")
+            Debug("Cursor empty (Pickup failed). Retrying...")
             ClearCursor()
             currentState = "PREPARE_UI" 
             return
         end
         
-        -- Use BYPASS function to drop the item
-        Real_ClickSendMailItemButton()
+        Real_ClickSendMailItemButton() -- Drop item
         
+        -- STRICT CHECK: Is the item actually in the slot?
         if GetSendMailItem() then
-            Debug("Success! Attached.")
+            Debug("Item attached successfully.")
             currentState = "SEND_MAIL"
         else
-            Debug("FAILED: Item dropped but didn't stick.")
+            Debug("FAILED: Item dropped but slot is empty. Aborting this item.")
             ClearCursor() 
             currentState = "NEXT_ITEM" 
         end
@@ -134,8 +144,21 @@ local function RunStateMachine(elapsed)
 
     -- STATE 4: SEND MAIL
     if currentState == "SEND_MAIL" then
+        -- Final Safety Check: Do not send if slot is empty
+        if not GetSendMailItem() then
+             Debug("CRITICAL: Slot became empty before send. Aborting.")
+             currentState = "NEXT_ITEM"
+             return
+        end
+
         Debug("Sending to " .. currentWork.recipient)
+        
+        -- We send with Subject = ""
+        -- The game will auto-fill the item name.
+        -- If the item is missing, the game will error "Enter a subject" and FAIL TO SEND (Good!)
         SendMail(currentWork.recipient, "", "")
+        
+        waitTimer = 0
         currentState = "WAITING_FOR_SERVER"
     end
 end
@@ -198,9 +221,11 @@ eventFrame:SetScript("OnEvent", function()
     elseif event == "UI_ERROR_MESSAGE" then
         if arg1 == ERR_MAIL_TARGET_NOT_FOUND or arg1 == ERR_MAIL_MAILBOX_FULL then
             processing = false
-            Print("Critical Error. Stopping.")
-        else
-            currentState = "NEXT_ITEM"
+            Print("Critical Error: " .. arg1)
+        elseif currentState == "WAITING_FOR_SERVER" then
+             -- If we get an error while waiting, assume send failed and move on
+             Debug("Send Error: " .. arg1)
+             currentState = "NEXT_ITEM"
         end
     end
 end)
@@ -212,7 +237,7 @@ eventFrame:SetScript("OnUpdate", function()
 end)
 
 -- =============================================================
--- UI SETUP (Simplified for brevity, logic identical to previous)
+-- UI SETUP
 -- =============================================================
 
 local function RefreshConfigList()
@@ -256,7 +281,17 @@ mmBtn:SetFrameStrata("LOW"); mmBtn:SetWidth(32); mmBtn:SetHeight(32); mmBtn:SetP
 local icon = mmBtn:CreateTexture(nil, "BACKGROUND"); icon:SetTexture("Interface\\Icons\\INV_Letter_15"); icon:SetWidth(20); icon:SetHeight(20); icon:SetPoint("CENTER", 0, 0)
 local border = mmBtn:CreateTexture(nil, "OVERLAY"); border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder"); border:SetWidth(52); border:SetHeight(52); border:SetPoint("TOPLEFT", 0, 0)
 mmBtn:SetScript("OnClick", function() BankRouter_InitDB(); CreateConfigFrame(); if configFrame:IsVisible() then configFrame:Hide() else configFrame:Show() end end)
--- mmBtn Movement code omitted for brevity
+local function UpdateMinimapPosition()
+    local angle = math.rad(BankRouterDB.minimapPos or 45)
+    local x, y = math.cos(angle), math.sin(angle)
+    mmBtn:SetPoint("CENTER", Minimap, "CENTER", x * 80, y * 80)
+end
+mmBtn:SetMovable(true); mmBtn:RegisterForDrag("LeftButton")
+mmBtn:SetScript("OnDragStart", function() this:LockHighlight(); this.isDragging = true end)
+mmBtn:SetScript("OnDragStop", function() this:UnlockHighlight(); this.isDragging = false end)
+mmBtn:SetScript("OnUpdate", function() if this.isDragging then local mx, my = Minimap:GetCenter(); local px, py = GetCursorPosition(); local scale = UIParent:GetScale(); px, py = px / scale, py / scale; local angle = math.deg(math.atan2(py - my, px - mx)); BankRouterDB.minimapPos = angle; UpdateMinimapPosition() end end)
+eventFrame:RegisterEvent("PLAYER_LOGIN") -- For Minimap
+eventFrame:HookScript("OnEvent", function() if event == "PLAYER_LOGIN" then UpdateMinimapPosition() end end)
 
 local btn = CreateFrame("Button", "BankRouterBtn", MailFrame, "UIPanelButtonTemplate")
 btn:SetWidth(120); btn:SetHeight(25); btn:SetPoint("TOPRIGHT", MailFrame, "TOPRIGHT", -50, -40); btn:SetText("Auto Route")
