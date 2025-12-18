@@ -8,9 +8,9 @@
 -- Define which items go to which character.
 -- Format: ["Item Name"] = "CharacterName",
 local config = {
-    ["Runecloth"]    = "ClothBankToon",
-    ["Thorium Ore"]  = "OreBankToon",
-    ["Light Leather"]= "LeatherToon",
+    ["Red Wolf Meat"]    = "Tension",
+    ["Silk Cloth"]  = "Tension",
+    ["Mageweave Cloth"]= "Tension",
     ["Strange Dust"] = "EnchantToon",
 }
 
