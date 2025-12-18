@@ -436,7 +436,7 @@ local function PrepareNextBatch()
     
     -- 4. Set Subject
     if targetSubject then
-        SendMailSubjectEditBox:SetText("BankRouter: " .. targetSubject)
+        SendMailSubjectEditBox:SetText("BankRouter: " .. targetRecipient .. " Shipment")
     else
         SendMailSubjectEditBox:SetText("BankRouter Shipment")
     end
