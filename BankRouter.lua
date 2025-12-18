@@ -2,7 +2,6 @@
 local AddonName = "BankRouter"
 local BR = CreateFrame("Frame")
 BR:RegisterEvent("ADDON_LOADED")
-BR:RegisterEvent("MAIL_SHOW")
 BR:RegisterEvent("MAIL_CLOSED")
 BR:RegisterEvent("MAIL_SEND_SUCCESS")
 
@@ -35,21 +34,18 @@ local function CreateMinimapButton()
     btn:SetHeight(32)
     btn:SetFrameStrata("LOW")
     
-    -- Icon
     local icon = btn:CreateTexture(nil, "BACKGROUND")
-    icon:SetTexture("Interface\\Icons\\INV_Letter_15") -- Mail icon
+    icon:SetTexture("Interface\\Icons\\INV_Letter_15")
     icon:SetWidth(20)
     icon:SetHeight(20)
     icon:SetPoint("CENTER", btn, "CENTER", 0, 1)
     
-    -- Border
     local border = btn:CreateTexture(nil, "OVERLAY")
     border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
     border:SetWidth(54)
     border:SetHeight(54)
     border:SetPoint("TOPLEFT", btn, "TOPLEFT", 0, 0)
 
-    -- Positioning Logic
     local function UpdatePosition()
         local pos = BankRouterDB.minimapPos or 45
         local radius = 80
@@ -58,7 +54,6 @@ local function CreateMinimapButton()
         btn:SetPoint("CENTER", "Minimap", "CENTER", x, y)
     end
 
-    -- Scripts
     btn:RegisterForDrag("LeftButton")
     btn:SetScript("OnDragStart", function() btn:StartMoving() end)
     btn:SetScript("OnDragStop", function()
@@ -82,11 +77,9 @@ local function CreateMinimapButton()
         GameTooltip:SetOwner(this, "ANCHOR_LEFT")
         GameTooltip:AddLine("BankRouter")
         GameTooltip:AddLine("Click to configure routes", 1, 1, 1)
-        GameTooltip:AddLine("Drag to move", 0.7, 0.7, 0.7)
         GameTooltip:Show()
     end)
     btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-
     UpdatePosition()
 end
 
@@ -94,7 +87,6 @@ end
 --  CONFIGURATION GUI
 -- =============================================================
 local function UpdateRouteList(scrollChild)
-    -- Clear existing children (simple way: hide them and reuse in real lib, here we just recreate for simplicity in V1)
     local kids = {scrollChild:GetChildren()}
     for _, child in ipairs(kids) do
         child:Hide()
@@ -122,7 +114,6 @@ local function UpdateRouteList(scrollChild)
             UpdateRouteList(scrollChild)
             Print("Removed route for: " .. item)
         end)
-
         yOffset = yOffset - 22
     end
 end
@@ -143,18 +134,15 @@ local function CreateConfigFrame()
     f:RegisterForDrag("LeftButton")
     f:SetScript("OnDragStart", function() f:StartMoving() end)
     f:SetScript("OnDragStop", function() f:StopMovingOrSizing() end)
-    f:Hide() -- Hidden by default
+    f:Hide()
 
-    -- Title
     local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     title:SetPoint("TOP", f, "TOP", 0, -15)
     title:SetText("BankRouter Config")
 
-    -- Close Button
     local closeBtn = CreateFrame("Button", nil, f, "UIPanelCloseButton")
     closeBtn:SetPoint("TOPRIGHT", f, "TOPRIGHT", -5, -5)
 
-    -- Item Name Input
     local itemInput = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
     itemInput:SetWidth(120)
     itemInput:SetHeight(20)
@@ -165,7 +153,6 @@ local function CreateConfigFrame()
     itemLabel:SetPoint("BOTTOMLEFT", itemInput, "TOPLEFT", -5, 0)
     itemLabel:SetText("Item Name (Case Sensitive)")
 
-    -- Recipient Input
     local recInput = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
     recInput:SetWidth(100)
     recInput:SetHeight(20)
@@ -176,15 +163,14 @@ local function CreateConfigFrame()
     recLabel:SetPoint("BOTTOMLEFT", recInput, "TOPLEFT", -5, 0)
     recLabel:SetText("Recipient Name")
 
-    -- Add Button
     local addBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
     addBtn:SetWidth(250)
     addBtn:SetHeight(25)
     addBtn:SetPoint("TOP", f, "TOP", 0, -85)
     addBtn:SetText("Add / Update Route")
 
-    -- Scroll Area for List
-    local scrollFrame = CreateFrame("ScrollFrame", nil, f, "UIPanelScrollFrameTemplate")
+    -- FIX: Added specific name "BankRouterConfigScrollFrame" so the template works
+    local scrollFrame = CreateFrame("ScrollFrame", "BankRouterConfigScrollFrame", f, "UIPanelScrollFrameTemplate")
     scrollFrame:SetPoint("TOPLEFT", f, "TOPLEFT", 15, -120)
     scrollFrame:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -35, 15)
     
@@ -193,7 +179,6 @@ local function CreateConfigFrame()
     scrollChild:SetHeight(300)
     scrollFrame:SetScrollChild(scrollChild)
 
-    -- Add Logic
     addBtn:SetScript("OnClick", function()
         local item = itemInput:GetText()
         local to = recInput:GetText()
@@ -214,17 +199,16 @@ local function CreateConfigFrame()
 end
 
 -- =============================================================
---  MAIL LOGIC
+--  MAIL LOGIC & QUEUE
 -- =============================================================
 
--- Queue Processor (Runs on OnUpdate when active)
 local timer = 0
 local QueueFrame = CreateFrame("Frame")
 QueueFrame:Hide()
 
 QueueFrame:SetScript("OnUpdate", function()
     timer = timer + arg1
-    if timer > 1.5 then -- Wait 1.5s between mails to be safe with server
+    if timer > 1.5 then
         timer = 0
         if currentQueueIndex > table.getn(queue) then
             QueueFrame:Hide()
@@ -235,25 +219,17 @@ QueueFrame:SetScript("OnUpdate", function()
 
         local task = queue[currentQueueIndex]
         
-        -- Switch to Send Mail Tab
         MailFrameTab2:Click()
-        
-        -- Clear fields just in case
         SendMailNameEditBox:SetText("")
         SendMailSubjectEditBox:SetText("")
-        
-        -- Fill Name
         SendMailNameEditBox:SetText(task.recipient)
         SendMailSubjectEditBox:SetText("BankRouter: " .. task.itemName)
         
-        -- Attach items (Up to 12 slots)
         local slotsFilled = 0
         for i=1, 12 do
             if task.slots[i] then
                 local bag = task.slots[i].bag
                 local slot = task.slots[i].slot
-                
-                -- Verify item is still there (basic check)
                 local texture, count = GetContainerItemInfo(bag, slot)
                 if texture then
                     PickupContainerItem(bag, slot)
@@ -266,9 +242,7 @@ QueueFrame:SetScript("OnUpdate", function()
         if slotsFilled > 0 then
             Print("Sending batch to " .. task.recipient .. "...")
             SendMail(task.recipient, "BankRouter: " .. task.itemName, "Auto forwarded by BankRouter.")
-            -- We wait for MAIL_SEND_SUCCESS event to increment queue
         else
-            -- If for some reason slots were empty, skip this task
             currentQueueIndex = currentQueueIndex + 1
         end
     end
@@ -280,14 +254,12 @@ local function BuildMailQueue()
     
     local tasksByRecipient = {} 
 
-    -- Scan Bags
     for bag = 0, 4 do
         for slot = 1, GetContainerNumSlots(bag) do
             local link = GetContainerItemLink(bag, slot)
             if link then
                 local name = GetItemNameFromLink(link)
                 local recipient = BankRouterDB.routes[name]
-                
                 if recipient then
                     if not tasksByRecipient[recipient] then tasksByRecipient[recipient] = {} end
                     table.insert(tasksByRecipient[recipient], {bag=bag, slot=slot, name=name})
@@ -296,7 +268,6 @@ local function BuildMailQueue()
         end
     end
 
-    -- Construct Queue Batches (max 12 items per mail)
     for recipient, items in pairs(tasksByRecipient) do
         local count = 0
         local batch = {}
@@ -315,10 +286,33 @@ local function BuildMailQueue()
     end
 
     if table.getn(queue) > 0 then
-        Print("Found items to route. Starting auto-send...")
+        Print("Found items to route. Starting...")
         isProcessing = true
         QueueFrame:Show()
+    else
+        Print("No configured items found in bags.")
     end
+end
+
+-- =============================================================
+--  MAILBOX GUI BUTTON
+-- =============================================================
+local function CreateMailboxButton()
+    -- Create a button attached to the MailFrame
+    local btn = CreateFrame("Button", "BankRouterSendButton", MailFrame, "UIPanelButtonTemplate")
+    btn:SetWidth(100)
+    btn:SetHeight(25)
+    -- Position it at the top left of the MailFrame
+    btn:SetPoint("TOPLEFT", MailFrame, "TOPLEFT", 60, -15)
+    btn:SetText("Router Send")
+    
+    btn:SetScript("OnClick", function()
+        BuildMailQueue()
+    end)
+    
+    -- Only show the button when we are on the Send Mail tab (optional, but cleaner)
+    -- For simplicity in 1.12, showing it always on the frame is fine, or we can hook the tabs.
+    -- We will leave it visible on the MailFrame generally.
 end
 
 -- =============================================================
@@ -332,15 +326,11 @@ BR:SetScript("OnEvent", function()
         
         CreateConfigFrame()
         CreateMinimapButton()
-        Print("Loaded. Click minimap button to configure.")
-        
-    elseif event == "MAIL_SHOW" then
-        -- Trigger logic
-        BuildMailQueue()
+        CreateMailboxButton() -- Create the trigger button
+        Print("Loaded.")
         
     elseif event == "MAIL_SEND_SUCCESS" then
         if isProcessing then
-            -- Move to next task
             currentQueueIndex = currentQueueIndex + 1
         end
         
@@ -348,7 +338,7 @@ BR:SetScript("OnEvent", function()
         if isProcessing then
             isProcessing = false
             QueueFrame:Hide()
-            Print("Mail closed. Auto-send stopped.")
+            Print("Mail closed. Routing stopped.")
         end
     end
 end)
