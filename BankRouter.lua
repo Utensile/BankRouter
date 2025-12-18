@@ -6,7 +6,7 @@
 
 -- CONFIGURATION
 -- -------------------------------------------------------------
-local config = {
+local defaultRoutes = {
     ["Red Wolf Meat"]    = "Knabe",
     ["Silk Cloth"]  = "Knabe",
     ["Mageweave Cloth"]= "Knabe",
