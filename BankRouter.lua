@@ -197,16 +197,25 @@ end
 -- =============================================================
 
 local function PrepareNextBatch()
+    -- 0. SAFETY CHECK: IS MAIL ALREADY FULL?
+    -- If slot 1 has an item, we are still waiting for the user to click Send.
+    local attachedName = GetSendMailItem(1)
+    if attachedName then
+        Print("Mail is already filled! Please click Send (or clear mail) before preparing next batch.")
+        return
+    end
+
     local myName = UnitName("player")
     local targetRecipient = nil
     local targetSubject = nil
     local itemsToAttach = {}
     
-    -- Scan to find the FIRST recipient we need to service
+    -- 1. Scan to find the FIRST recipient we need to service
     for bag = 0, 4 do
         for slot = 1, GetContainerNumSlots(bag) do
             local texture, count, locked = GetContainerItemInfo(bag, slot)
             
+            -- If locked, it means the item is currently being moved or attached
             if texture and not locked then
                 local link = GetContainerItemLink(bag, slot)
                 local name = GetItemNameFromLink(link)
@@ -239,31 +248,31 @@ local function PrepareNextBatch()
         return
     end
 
-    -- Switch to Send Tab
+    -- 2. Switch to Send Tab
     MailFrameTab2:Click() 
     
-    -- Clear Fields
+    -- 3. Force Update the Name Field
+    -- We clear the text, clear the focus (remove cursor), then set the new text.
+    -- This prevents the UI from getting stuck on the previous name.
     SendMailNameEditBox:SetText("")
-    SendMailSubjectEditBox:SetText("")
-    
-    -- Set Recipient
+    SendMailNameEditBox:ClearFocus() 
     SendMailNameEditBox:SetText(targetRecipient)
     
-    -- Set Subject (BankRouter: ItemName)
+    -- 4. Set Subject
     if targetSubject then
         SendMailSubjectEditBox:SetText("BankRouter: " .. targetSubject)
     else
         SendMailSubjectEditBox:SetText("BankRouter Shipment")
     end
     
-    -- Attach Items
+    -- 5. Attach Items
     local count = 0
     for _, item in ipairs(itemsToAttach) do
         UseContainerItem(item.bag, item.slot)
         count = count + 1
     end
     
-    Print("Prepared batch for " .. targetRecipient .. " containing " .. count .. " items.")
+    Print("Prepared batch for " .. targetRecipient .. " (" .. count .. " items). Press Send when ready.")
 end
 
 -- =============================================================
