@@ -1,0 +1,10 @@
+# OS junk files
+.DS_Store
+Thumbs.db
+
+# Editor directories
+.idea/
+.vscode/
+
+# WoW temporary files (if you ever run it inside the game folder)
+*.bak
