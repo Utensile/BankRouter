@@ -2,19 +2,6 @@
 local AddonName = "BankRouter"
 local BR = CreateFrame("Frame")
 BR:RegisterEvent("ADDON_LOADED")
-BR:RegisterEvent("MAIL_CLOSED")
-BR:RegisterEvent("MAIL_SEND_SUCCESS")
-
--- State Variables
-local isProcessing = false
-local queue = {}
-local currentQueueIndex = 0
-
--- Logic States
-local STATE_ATTACH = 1
-local STATE_SEND = 2
-local currentState = STATE_ATTACH
-local stateTimer = 0
 
 -- Helper: Print to Chat
 local function Print(msg)
@@ -206,137 +193,84 @@ local function CreateConfigFrame()
 end
 
 -- =============================================================
---  MAIL LOGIC & QUEUE
+--  MAIL BATCH LOGIC
 -- =============================================================
 
-local timer = 0
-local QueueFrame = CreateFrame("Frame")
-QueueFrame:Hide()
-
-QueueFrame:SetScript("OnUpdate", function()
-    -- Only run logic if we have tasks
-    if currentQueueIndex > table.getn(queue) then
-        QueueFrame:Hide()
-        isProcessing = false
-        Print("Done routing items.")
-        return
-    end
-
-    local task = queue[currentQueueIndex]
+local function PrepareNextBatch()
+    -- 1. Scan bags and find the FIRST recipient that has available items
+    local foundItems = {} -- Key: Recipient, Value: { {bag=, slot=, name=} }
     
-    -- STATE 1: ATTACH ITEMS
-    if currentState == STATE_ATTACH then
-        timer = timer + arg1
-        if timer > 0.5 then -- Short delay before starting
-            
-            MailFrameTab2:Click()
-            SendMailNameEditBox:SetText(task.recipient)
-            SendMailSubjectEditBox:SetText("BankRouter: " .. task.itemName)
-            
-            local attemptedSlots = 0
-            for i=1, 12 do
-                if task.slots[i] then
-                    local bag = task.slots[i].bag
-                    local slot = task.slots[i].slot
-                    local texture, count = GetContainerItemInfo(bag, slot)
-                    if texture then
-                        UseContainerItem(bag, slot)
-                        attemptedSlots = attemptedSlots + 1
-                    end
-                end
-            end
-            
-            -- Immediately switch to SEND state, but reset timer
-            currentState = STATE_SEND
-            timer = 0
-            Print("Attaching " .. attemptedSlots .. " items...")
-        end
-
-    -- STATE 2: WAIT THEN SEND (BLIND TRUST)
-    elseif currentState == STATE_SEND then
-        timer = timer + arg1
-        
-        -- WAIT 1.0 SECOND strictly to allow server sync
-        if timer > 1.0 then
-            Print("Sending to " .. task.recipient .. "...")
-            SendMail(task.recipient, "BankRouter: " .. task.itemName, "Auto forwarded.")
-            
-            -- We stop here and wait for MAIL_SEND_SUCCESS to trigger the next batch
-            -- But we add a safety timeout just in case the event never fires
-            if timer > 5.0 then
-                Print("Forcing next batch (Event timeout)...")
-                currentQueueIndex = currentQueueIndex + 1
-                currentState = STATE_ATTACH
-                timer = 0
-            end
-        end
-    end
-end)
-
-local function BuildMailQueue()
-    queue = {}
-    currentQueueIndex = 1
-    currentState = STATE_ATTACH
-    timer = 0
-    
-    local tasksByRecipient = {} 
-    local foundCount = 0
-
     for bag = 0, 4 do
         for slot = 1, GetContainerNumSlots(bag) do
-            local link = GetContainerItemLink(bag, slot)
-            if link then
+            -- GetContainerItemInfo returns texture, count, locked, quality, readable
+            -- We MUST check 'locked'. If it's locked, it's already in the mail window or being moved.
+            local texture, count, locked = GetContainerItemInfo(bag, slot)
+            
+            if texture and not locked then
+                local link = GetContainerItemLink(bag, slot)
                 local name = GetItemNameFromLink(link)
                 local recipient = BankRouterDB.routes[name]
                 
                 if recipient then
-                    if not tasksByRecipient[recipient] then tasksByRecipient[recipient] = {} end
-                    table.insert(tasksByRecipient[recipient], {bag=bag, slot=slot, name=name})
-                    foundCount = foundCount + 1
+                    if not foundItems[recipient] then foundItems[recipient] = {} end
+                    table.insert(foundItems[recipient], {bag=bag, slot=slot, name=name})
                 end
             end
         end
     end
 
-    for recipient, items in pairs(tasksByRecipient) do
-        local count = 0
-        local batch = {}
-        for _, itemData in ipairs(items) do
-            table.insert(batch, itemData)
-            count = count + 1
-            if count == 12 then
-                table.insert(queue, {recipient = recipient, itemName = "Mixed Batch", slots = batch})
-                batch = {}
-                count = 0
-            end
-        end
-        if count > 0 then
-            table.insert(queue, {recipient = recipient, itemName = "Mixed Batch", slots = batch})
-        end
+    -- 2. Pick the first recipient that has items
+    local targetRecipient, items = next(foundItems)
+    
+    if not targetRecipient then
+        Print("No more items found to route.")
+        return
     end
 
-    if table.getn(queue) > 0 then
-        Print("Found " .. foundCount .. " items. Starting...")
-        isProcessing = true
-        QueueFrame:Show()
-    else
-        Print("No configured items found in bags.")
+    -- 3. Prepare the Mail Frame
+    -- Switch to Send Tab
+    MailFrameTab2:Click() 
+    
+    -- Clear previous info just in case (though usually sending clears it)
+    SendMailNameEditBox:SetText("")
+    SendMailSubjectEditBox:SetText("")
+    
+    SendMailNameEditBox:SetText(targetRecipient)
+    SendMailSubjectEditBox:SetText("BankRouter Shipment")
+    
+    -- 4. Attach up to 12 items
+    local attachedCount = 0
+    for _, itemData in ipairs(items) do
+        if attachedCount >= 12 then break end
+        
+        -- UseContainerItem puts it in the mail slot
+        UseContainerItem(itemData.bag, itemData.slot)
+        attachedCount = attachedCount + 1
     end
+    
+    Print("Prepared batch for " .. targetRecipient .. " (" .. attachedCount .. " items). Press Send when ready.")
 end
 
 -- =============================================================
 --  MAILBOX GUI BUTTON
 -- =============================================================
 local function CreateMailboxButton()
-    local btn = CreateFrame("Button", "BankRouterSendButton", MailFrame, "UIPanelButtonTemplate")
+    local btn = CreateFrame("Button", "BankRouterPrepareButton", MailFrame, "UIPanelButtonTemplate")
     btn:SetWidth(100)
     btn:SetHeight(25)
-    btn:SetPoint("TOPLEFT", MailFrame, "TOPLEFT", 60, -15)
-    btn:SetText("Router Send")
+    
+    -- Position: Below the standard "Send" button (SendMailMailButton)
+    -- We attach it to the SendMailMailButton so it moves with it if the UI scales
+    btn:SetPoint("TOP", "SendMailMailButton", "BOTTOM", 0, -5)
+    
+    btn:SetText("Prepare Batch")
     
     btn:SetScript("OnClick", function()
-        BuildMailQueue()
+        PrepareNextBatch()
     end)
+    
+    -- Optional: Only show this button when on the "Send Mail" tab (Tab 2)
+    -- But in 1.12 simple is better; it will be visible on the frame.
 end
 
 -- =============================================================
@@ -352,20 +286,5 @@ BR:SetScript("OnEvent", function()
         CreateMinimapButton()
         CreateMailboxButton()
         Print("Loaded.")
-        
-    elseif event == "MAIL_SEND_SUCCESS" then
-        if isProcessing then
-            -- Success! Move to next immediately
-            currentQueueIndex = currentQueueIndex + 1
-            currentState = STATE_ATTACH
-            timer = 0
-        end
-        
-    elseif event == "MAIL_CLOSED" then
-        if isProcessing then
-            isProcessing = false
-            QueueFrame:Hide()
-            Print("Mail closed. Routing stopped.")
-        end
     end
 end)
