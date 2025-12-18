@@ -1,326 +1,354 @@
--- =============================================================
--- BANKROUTER v1.11 (API FIX & REORDERED)
--- Fixes:
--- 1. Removed HookScript (caused crash in 1.12).
--- 2. Reordered code so UI functions exist before Event Loop calls them.
--- 3. Merged PLAYER_LOGIN logic into main handler.
--- =============================================================
+-- Namespace and Event Handling
+local AddonName = "BankRouter"
+local BR = CreateFrame("Frame")
+BR:RegisterEvent("ADDON_LOADED")
+BR:RegisterEvent("MAIL_SHOW")
+BR:RegisterEvent("MAIL_CLOSED")
+BR:RegisterEvent("MAIL_SEND_SUCCESS")
 
--- CONFIGURATION & STATE
-local mailQueue = {}
-local processing = false
-local currentState = "IDLE" 
-local currentWork = nil
-local eventFrame = CreateFrame("Frame")
-local delayTimer = 0 
-local waitTimer = 0
-local configFrame, scrollChild
+-- State Variables
+local isProcessing = false
+local queue = {}
+local currentQueueIndex = 0
 
--- UTILITIES
+-- Helper: Print to Chat
 local function Print(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cff00ccff[BankRouter]|r " .. msg)
 end
 
-local function Debug(msg)
-    -- Uncomment to see debug info
-    DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[DEBUG]|r " .. msg)
-end
-
--- HOOK BYPASS
--- We use this to force the item to drop into the physical slot,
--- ignoring TurtleMail's virtual attachment system.
-local function Real_ClickSendMailItemButton()
-    if TurtleMail and TurtleMail.orig and TurtleMail.orig.ClickSendMailItemButton then
-        TurtleMail.orig.ClickSendMailItemButton()
-    else
-        ClickSendMailItemButton()
+-- Helper: Get Item Name from Link
+local function GetItemNameFromLink(link)
+    if not link then return nil end
+    local name = string.find(link, "%[(.+)%]")
+    if name then
+        return string.sub(link, name + 1, string.len(link) - 4)
     end
-end
-
--- DATABASE INIT
-function BankRouter_InitDB()
-    if not BankRouterDB then BankRouterDB = {} end
-    if BankRouterDB.routes == nil then
-        BankRouterDB.routes = {
-            ["Runecloth"]     = "ClothBankToon",
-            ["Thorium Ore"]   = "OreBankToon",
-            ["Light Leather"] = "LeatherToon",
-        }
-        Print("Default routes loaded.")
-    end
-    if not BankRouterDB.minimapPos then BankRouterDB.minimapPos = 45 end
+    return nil
 end
 
 -- =============================================================
--- CORE LOGIC (STATE MACHINE)
+--  MINIMAP BUTTON
 -- =============================================================
-
-local function RunStateMachine(elapsed)
+local function CreateMinimapButton()
+    local btn = CreateFrame("Button", "BankRouterMinimapButton", Minimap)
+    btn:SetWidth(32)
+    btn:SetHeight(32)
+    btn:SetFrameStrata("LOW")
     
-    if not MailFrame:IsVisible() then
-        processing = false
-        currentState = "IDLE"
-        Print("Mailbox closed. Stopping.")
-        return
+    -- Icon
+    local icon = btn:CreateTexture(nil, "BACKGROUND")
+    icon:SetTexture("Interface\\Icons\\INV_Letter_15") -- Mail icon
+    icon:SetWidth(20)
+    icon:SetHeight(20)
+    icon:SetPoint("CENTER", btn, "CENTER", 0, 1)
+    
+    -- Border
+    local border = btn:CreateTexture(nil, "OVERLAY")
+    border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+    border:SetWidth(54)
+    border:SetHeight(54)
+    border:SetPoint("TOPLEFT", btn, "TOPLEFT", 0, 0)
+
+    -- Positioning Logic
+    local function UpdatePosition()
+        local pos = BankRouterDB.minimapPos or 45
+        local radius = 80
+        local x = math.cos(math.rad(pos)) * radius
+        local y = math.sin(math.rad(pos)) * radius
+        btn:SetPoint("CENTER", "Minimap", "CENTER", x, y)
     end
 
-    -- STATE: WAIT_DELAY
-    if currentState == "WAIT_DELAY" then
-        delayTimer = delayTimer - elapsed
-        if delayTimer <= 0 then
-            currentState = "ATTACH_ITEM" 
+    -- Scripts
+    btn:RegisterForDrag("LeftButton")
+    btn:SetScript("OnDragStart", function() btn:StartMoving() end)
+    btn:SetScript("OnDragStop", function()
+        btn:StopMovingOrSizing()
+        local mx, my = Minimap:GetCenter()
+        local px, py = btn:GetCenter()
+        local dx, dy = px - mx, py - my
+        local angle = math.deg(math.atan2(dy, dx))
+        if angle < 0 then angle = angle + 360 end
+        BankRouterDB.minimapPos = angle
+        UpdatePosition()
+    end)
+    btn:SetScript("OnClick", function() 
+        if BankRouterFrame:IsShown() then 
+            BankRouterFrame:Hide() 
+        else 
+            BankRouterFrame:Show() 
+        end 
+    end)
+    btn:SetScript("OnEnter", function()
+        GameTooltip:SetOwner(this, "ANCHOR_LEFT")
+        GameTooltip:AddLine("BankRouter")
+        GameTooltip:AddLine("Click to configure routes", 1, 1, 1)
+        GameTooltip:AddLine("Drag to move", 0.7, 0.7, 0.7)
+        GameTooltip:Show()
+    end)
+    btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    UpdatePosition()
+end
+
+-- =============================================================
+--  CONFIGURATION GUI
+-- =============================================================
+local function UpdateRouteList(scrollChild)
+    -- Clear existing children (simple way: hide them and reuse in real lib, here we just recreate for simplicity in V1)
+    local kids = {scrollChild:GetChildren()}
+    for _, child in ipairs(kids) do
+        child:Hide()
+        child:SetParent(nil)
+    end
+
+    local yOffset = 0
+    for item, recipient in pairs(BankRouterDB.routes) do
+        local row = CreateFrame("Frame", nil, scrollChild)
+        row:SetWidth(260)
+        row:SetHeight(20)
+        row:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 5, yOffset)
+
+        local text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        text:SetPoint("LEFT", row, "LEFT", 0, 0)
+        text:SetText("|cffffd100" .. item .. "|r  ->  " .. recipient)
+
+        local delBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+        delBtn:SetWidth(20)
+        delBtn:SetHeight(20)
+        delBtn:SetPoint("RIGHT", row, "RIGHT", -5, 0)
+        delBtn:SetText("X")
+        delBtn:SetScript("OnClick", function()
+            BankRouterDB.routes[item] = nil
+            UpdateRouteList(scrollChild)
+            Print("Removed route for: " .. item)
+        end)
+
+        yOffset = yOffset - 22
+    end
+end
+
+local function CreateConfigFrame()
+    local f = CreateFrame("Frame", "BankRouterFrame", UIParent)
+    f:SetWidth(300)
+    f:SetHeight(400)
+    f:SetPoint("CENTER", UIParent, "CENTER")
+    f:SetBackdrop({
+        bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+        tile = true, tileSize = 32, edgeSize = 32,
+        insets = { left = 11, right = 12, top = 12, bottom = 11 }
+    })
+    f:EnableMouse(true)
+    f:SetMovable(true)
+    f:RegisterForDrag("LeftButton")
+    f:SetScript("OnDragStart", function() f:StartMoving() end)
+    f:SetScript("OnDragStop", function() f:StopMovingOrSizing() end)
+    f:Hide() -- Hidden by default
+
+    -- Title
+    local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOP", f, "TOP", 0, -15)
+    title:SetText("BankRouter Config")
+
+    -- Close Button
+    local closeBtn = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+    closeBtn:SetPoint("TOPRIGHT", f, "TOPRIGHT", -5, -5)
+
+    -- Item Name Input
+    local itemInput = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
+    itemInput:SetWidth(120)
+    itemInput:SetHeight(20)
+    itemInput:SetPoint("TOPLEFT", f, "TOPLEFT", 20, -50)
+    itemInput:SetAutoFocus(false)
+    
+    local itemLabel = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    itemLabel:SetPoint("BOTTOMLEFT", itemInput, "TOPLEFT", -5, 0)
+    itemLabel:SetText("Item Name (Case Sensitive)")
+
+    -- Recipient Input
+    local recInput = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
+    recInput:SetWidth(100)
+    recInput:SetHeight(20)
+    recInput:SetPoint("LEFT", itemInput, "RIGHT", 10, 0)
+    recInput:SetAutoFocus(false)
+
+    local recLabel = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    recLabel:SetPoint("BOTTOMLEFT", recInput, "TOPLEFT", -5, 0)
+    recLabel:SetText("Recipient Name")
+
+    -- Add Button
+    local addBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    addBtn:SetWidth(250)
+    addBtn:SetHeight(25)
+    addBtn:SetPoint("TOP", f, "TOP", 0, -85)
+    addBtn:SetText("Add / Update Route")
+
+    -- Scroll Area for List
+    local scrollFrame = CreateFrame("ScrollFrame", nil, f, "UIPanelScrollFrameTemplate")
+    scrollFrame:SetPoint("TOPLEFT", f, "TOPLEFT", 15, -120)
+    scrollFrame:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -35, 15)
+    
+    local scrollChild = CreateFrame("Frame", nil, scrollFrame)
+    scrollChild:SetWidth(250)
+    scrollChild:SetHeight(300)
+    scrollFrame:SetScrollChild(scrollChild)
+
+    -- Add Logic
+    addBtn:SetScript("OnClick", function()
+        local item = itemInput:GetText()
+        local to = recInput:GetText()
+        if item and item ~= "" and to and to ~= "" then
+            BankRouterDB.routes[item] = to
+            itemInput:SetText("")
+            recInput:SetText("")
+            itemInput:ClearFocus()
+            recInput:ClearFocus()
+            UpdateRouteList(scrollChild)
+            Print("Route added: " .. item .. " -> " .. to)
+        else
+            Print("Please enter both Item Name and Recipient.")
         end
-        return
-    end
+    end)
 
-    -- STATE: WAITING_FOR_SERVER
-    if currentState == "WAITING_FOR_SERVER" then
-        waitTimer = waitTimer + elapsed
-        if waitTimer > 4.0 then
-            Debug("TIMEOUT: Server didn't respond. Moving to next.")
-            currentState = "NEXT_ITEM"
-        end
-        return
-    end
+    f:SetScript("OnShow", function() UpdateRouteList(scrollChild) end)
+end
 
-    -- STATE 1: GET NEXT ITEM
-    if currentState == "NEXT_ITEM" then
-        currentWork = table.remove(mailQueue, 1)
-        if not currentWork then
-            processing = false
-            currentState = "IDLE"
-            Print("Queue empty. All done!")
+-- =============================================================
+--  MAIL LOGIC
+-- =============================================================
+
+-- Queue Processor (Runs on OnUpdate when active)
+local timer = 0
+local QueueFrame = CreateFrame("Frame")
+QueueFrame:Hide()
+
+QueueFrame:SetScript("OnUpdate", function()
+    timer = timer + arg1
+    if timer > 1.5 then -- Wait 1.5s between mails to be safe with server
+        timer = 0
+        if currentQueueIndex > table.getn(queue) then
+            QueueFrame:Hide()
+            isProcessing = false
+            Print("Done routing items.")
             return
         end
-        
-        Debug("Processing: " .. currentWork.name)
-        currentState = "PREPARE_UI"
-        return
-    end
 
-    -- STATE 2: PREPARE UI
-    if currentState == "PREPARE_UI" then
-        if not SendMailFrame:IsVisible() then
-            MailFrameTab2:Click()
-        end
+        local task = queue[currentQueueIndex]
         
+        -- Switch to Send Mail Tab
+        MailFrameTab2:Click()
+        
+        -- Clear fields just in case
         SendMailNameEditBox:SetText("")
         SendMailSubjectEditBox:SetText("")
-        SendMailBodyEditBox:SetText("")
         
-        ClearCursor()
-        Real_ClickSendMailItemButton() -- Clean slot
-        ClearCursor()
+        -- Fill Name
+        SendMailNameEditBox:SetText(task.recipient)
+        SendMailSubjectEditBox:SetText("BankRouter: " .. task.itemName)
         
-        delayTimer = 0.3 -- Short pause for UI update
-        currentState = "WAIT_DELAY"
-        return
-    end
-
-    -- STATE 3: ATTACH ITEM
-    if currentState == "ATTACH_ITEM" then
-        PickupContainerItem(currentWork.bag, currentWork.slot)
-        
-        if not CursorHasItem() then
-            Debug("Cursor empty (Pickup failed). Retrying...")
-            ClearCursor()
-            currentState = "PREPARE_UI" 
-            return
+        -- Attach items (Up to 12 slots)
+        local slotsFilled = 0
+        for i=1, 12 do
+            if task.slots[i] then
+                local bag = task.slots[i].bag
+                local slot = task.slots[i].slot
+                
+                -- Verify item is still there (basic check)
+                local texture, count = GetContainerItemInfo(bag, slot)
+                if texture then
+                    PickupContainerItem(bag, slot)
+                    ClickSendMailItemButton(i)
+                    slotsFilled = slotsFilled + 1
+                end
+            end
         end
-        
-        Real_ClickSendMailItemButton() -- Drop item
-        
-        -- STRICT CHECK: Is the item actually in the slot?
-        if GetSendMailItem() then
-            Debug("Item attached successfully.")
-            currentState = "SEND_MAIL"
+
+        if slotsFilled > 0 then
+            Print("Sending batch to " .. task.recipient .. "...")
+            SendMail(task.recipient, "BankRouter: " .. task.itemName, "Auto forwarded by BankRouter.")
+            -- We wait for MAIL_SEND_SUCCESS event to increment queue
         else
-            Debug("FAILED: Item dropped but slot is empty. Aborting this item.")
-            ClearCursor() 
-            currentState = "NEXT_ITEM" 
+            -- If for some reason slots were empty, skip this task
+            currentQueueIndex = currentQueueIndex + 1
         end
-        return
     end
+end)
 
-    -- STATE 4: SEND MAIL
-    if currentState == "SEND_MAIL" then
-        if not GetSendMailItem() then
-             Debug("CRITICAL: Slot became empty before send. Aborting.")
-             currentState = "NEXT_ITEM"
-             return
-        end
-
-        Debug("Sending to " .. currentWork.recipient)
-        
-        -- Send with Subject = "" (Game auto-fills item name)
-        SendMail(currentWork.recipient, "", "")
-        
-        waitTimer = 0
-        currentState = "WAITING_FOR_SERVER"
-    end
-end
-
-local function ScanBagsAndQueue()
-    BankRouter_InitDB()
-    mailQueue = {} 
+local function BuildMailQueue()
+    queue = {}
+    currentQueueIndex = 1
     
-    Debug("Scanning bags...")
+    local tasksByRecipient = {} 
+
+    -- Scan Bags
     for bag = 0, 4 do
         for slot = 1, GetContainerNumSlots(bag) do
             local link = GetContainerItemLink(bag, slot)
             if link then
-                local itemName = string.match(link, "%[(.*)%]")
-                if BankRouterDB.routes[itemName] then
-                    table.insert(mailQueue, {
-                        bag = bag,
-                        slot = slot,
-                        name = itemName,
-                        recipient = BankRouterDB.routes[itemName]
-                    })
+                local name = GetItemNameFromLink(link)
+                local recipient = BankRouterDB.routes[name]
+                
+                if recipient then
+                    if not tasksByRecipient[recipient] then tasksByRecipient[recipient] = {} end
+                    table.insert(tasksByRecipient[recipient], {bag=bag, slot=slot, name=name})
                 end
             end
         end
     end
 
-    local count = table.getn(mailQueue)
-    if count > 0 then
-        Print("Found " .. count .. " items.")
-        processing = true
-        currentState = "NEXT_ITEM"
-    else
-        Print("No configured items found.")
-    end
-end
-
--- =============================================================
--- UI SETUP (DEFINED BEFORE USE)
--- =============================================================
-
-local function RefreshConfigList()
-    local children = { scrollChild:GetChildren() }
-    for _, child in ipairs(children) do child:Hide(); child:SetParent(nil) end
-    local yOffset = 0
-    for item, recipient in pairs(BankRouterDB.routes) do
-        local row = CreateFrame("Frame", nil, scrollChild)
-        row:SetWidth(260); row:SetHeight(20); row:SetPoint("TOPLEFT", 5, yOffset)
-        local btnDelete = CreateFrame("Button", nil, row, "UIPanelCloseButton")
-        btnDelete:SetWidth(20); btnDelete:SetHeight(20); btnDelete:SetPoint("RIGHT", row, "RIGHT", -5, 0)
-        btnDelete:SetScript("OnClick", function() BankRouterDB.routes[item] = nil; RefreshConfigList() end)
-        local text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        text:SetPoint("LEFT", 5, 0); text:SetText("|cffffffff" .. item .. "|r  -->  |cff00ccff" .. recipient .. "|r")
-        yOffset = yOffset - 20
-    end
-    scrollChild:SetHeight(math.abs(yOffset))
-end
-
-local function CreateConfigFrame()
-    if configFrame then return end
-    configFrame = CreateFrame("Frame", "BankRouterConfig", UIParent)
-    configFrame:SetWidth(300); configFrame:SetHeight(350); configFrame:SetPoint("CENTER", UIParent, "CENTER")
-    configFrame:SetBackdrop({ bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background", edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border", tile = true, tileSize = 32, edgeSize = 32, insets = { left = 11, right = 12, top = 12, bottom = 11 } })
-    configFrame:EnableMouse(true); configFrame:SetMovable(true); configFrame:RegisterForDrag("LeftButton")
-    configFrame:SetScript("OnDragStart", function() this:StartMoving() end); configFrame:SetScript("OnDragStop", function() this:StopMovingOrSizing() end); configFrame:Hide()
-    
-    local closeBtn = CreateFrame("Button", nil, configFrame, "UIPanelCloseButton"); closeBtn:SetPoint("TOPRIGHT", -5, -5); closeBtn:SetScript("OnClick", function() configFrame:Hide() end)
-    local inputItem = CreateFrame("EditBox", nil, configFrame, "InputBoxTemplate"); inputItem:SetWidth(110); inputItem:SetHeight(20); inputItem:SetPoint("TOPLEFT", 20, -40); inputItem:SetAutoFocus(false); inputItem:SetText("Item Name")
-    local inputTo = CreateFrame("EditBox", nil, configFrame, "InputBoxTemplate"); inputTo:SetWidth(100); inputTo:SetHeight(20); inputTo:SetPoint("LEFT", inputItem, "RIGHT", 10, 0); inputTo:SetAutoFocus(false); inputTo:SetText("Recipient")
-    local btnAdd = CreateFrame("Button", nil, configFrame, "UIPanelButtonTemplate"); btnAdd:SetWidth(40); btnAdd:SetHeight(20); btnAdd:SetPoint("LEFT", inputTo, "RIGHT", 5, 0); btnAdd:SetText("Add")
-    btnAdd:SetScript("OnClick", function() if inputItem:GetText() ~= "" then BankRouterDB.routes[inputItem:GetText()] = inputTo:GetText(); inputItem:SetText(""); RefreshConfigList() end end)
-    
-    local scrollFrame = CreateFrame("ScrollFrame", "BankRouterScroll", configFrame, "UIPanelScrollFrameTemplate"); scrollFrame:SetPoint("TOPLEFT", 20, -75); scrollFrame:SetWidth(240); scrollFrame:SetHeight(240)
-    scrollChild = CreateFrame("Frame", nil, scrollFrame); scrollChild:SetWidth(240); scrollChild:SetHeight(10); scrollFrame:SetScrollChild(scrollChild)
-    RefreshConfigList()
-end
-
--- MINIMAP BUTTON
-local mmBtn = CreateFrame("Button", "BankRouterMinimapBtn", Minimap)
-mmBtn:SetFrameStrata("LOW"); mmBtn:SetWidth(32); mmBtn:SetHeight(32); mmBtn:SetPoint("CENTER", Minimap, "CENTER", -60, -60)
-local icon = mmBtn:CreateTexture(nil, "BACKGROUND"); icon:SetTexture("Interface\\Icons\\INV_Letter_15"); icon:SetWidth(20); icon:SetHeight(20); icon:SetPoint("CENTER", 0, 0)
-local border = mmBtn:CreateTexture(nil, "OVERLAY"); border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder"); border:SetWidth(52); border:SetHeight(52); border:SetPoint("TOPLEFT", 0, 0)
-
--- Minimap Functions
-local function UpdateMinimapPosition()
-    if not BankRouterDB then return end
-    local angle = math.rad(BankRouterDB.minimapPos or 45)
-    local x, y = math.cos(angle), math.sin(angle)
-    mmBtn:SetPoint("CENTER", Minimap, "CENTER", x * 80, y * 80)
-end
-
-mmBtn:SetMovable(true); mmBtn:RegisterForDrag("LeftButton")
-mmBtn:SetScript("OnDragStart", function() this:LockHighlight(); this.isDragging = true end)
-mmBtn:SetScript("OnDragStop", function() this:UnlockHighlight(); this.isDragging = false end)
-mmBtn:SetScript("OnUpdate", function() 
-    if this.isDragging then 
-        local mx, my = Minimap:GetCenter(); 
-        local px, py = GetCursorPosition(); 
-        local scale = UIParent:GetScale(); 
-        px, py = px / scale, py / scale; 
-        local angle = math.deg(math.atan2(py - my, px - mx)); 
-        BankRouterDB.minimapPos = angle; 
-        UpdateMinimapPosition() 
-    end 
-end)
-mmBtn:SetScript("OnClick", function() 
-    BankRouter_InitDB(); 
-    CreateConfigFrame(); 
-    if configFrame:IsVisible() then configFrame:Hide() else configFrame:Show() end 
-end)
-
--- MAILBOX BUTTON
-local btn = CreateFrame("Button", "BankRouterBtn", MailFrame, "UIPanelButtonTemplate")
-btn:SetWidth(120); btn:SetHeight(25); btn:SetPoint("TOPRIGHT", MailFrame, "TOPRIGHT", -50, -40); btn:SetText("Auto Route")
-btn:SetScript("OnClick", function() if processing then processing = false; Print("Stopped.") else ScanBagsAndQueue() end end)
-
-local original_MailFrameTab_OnClick = MailFrameTab_OnClick
-function MailFrameTab_OnClick(tab)
-    original_MailFrameTab_OnClick(tab)
-    if not tab then tab = this:GetID() end
-    if tab == 1 then BankRouterBtn:Show() else BankRouterBtn:Hide() end
-end
-
--- =============================================================
--- EVENTS (MOVED TO BOTTOM TO ENSURE FUNCTIONS EXIST)
--- =============================================================
-eventFrame:RegisterEvent("ADDON_LOADED")
-eventFrame:RegisterEvent("PLAYER_LOGIN")
-eventFrame:RegisterEvent("MAIL_SEND_SUCCESS")
-eventFrame:RegisterEvent("UI_ERROR_MESSAGE")
-eventFrame:RegisterEvent("MAIL_SHOW")
-
-eventFrame:SetScript("OnEvent", function()
-    -- DB Init
-    if event == "ADDON_LOADED" and arg1 == "BankRouter" then
-        BankRouter_InitDB()
-    elseif event == "PLAYER_LOGIN" then
-        -- This is safe to call now because UpdateMinimapPosition is defined above
-        UpdateMinimapPosition()
-    end
-    
-    -- UI Visibility
-    if event == "MAIL_SHOW" and BankRouterBtn then 
-        BankRouterBtn:Show() 
-    end
-
-    -- Core Logic
-    if not processing then return end
-
-    if event == "MAIL_SEND_SUCCESS" then
-        Debug("Mail Sent!")
-        currentState = "NEXT_ITEM"
-        
-    elseif event == "UI_ERROR_MESSAGE" then
-        if arg1 == ERR_MAIL_TARGET_NOT_FOUND or arg1 == ERR_MAIL_MAILBOX_FULL then
-            processing = false
-            Print("Critical Error: " .. arg1)
-        elseif currentState == "WAITING_FOR_SERVER" then
-             Debug("Send Error: " .. arg1)
-             currentState = "NEXT_ITEM"
+    -- Construct Queue Batches (max 12 items per mail)
+    for recipient, items in pairs(tasksByRecipient) do
+        local count = 0
+        local batch = {}
+        for _, itemData in ipairs(items) do
+            table.insert(batch, itemData)
+            count = count + 1
+            if count == 12 then
+                table.insert(queue, {recipient = recipient, itemName = "Mixed Batch", slots = batch})
+                batch = {}
+                count = 0
+            end
+        end
+        if count > 0 then
+            table.insert(queue, {recipient = recipient, itemName = "Mixed Batch", slots = batch})
         end
     end
-end)
 
-eventFrame:SetScript("OnUpdate", function()
-    if processing then
-        RunStateMachine(arg1)
+    if table.getn(queue) > 0 then
+        Print("Found items to route. Starting auto-send...")
+        isProcessing = true
+        QueueFrame:Show()
+    end
+end
+
+-- =============================================================
+--  EVENT HANDLERS
+-- =============================================================
+BR:SetScript("OnEvent", function()
+    if event == "ADDON_LOADED" and arg1 == AddonName then
+        if not BankRouterDB then BankRouterDB = {} end
+        if not BankRouterDB.routes then BankRouterDB.routes = {} end
+        if not BankRouterDB.minimapPos then BankRouterDB.minimapPos = 45 end
+        
+        CreateConfigFrame()
+        CreateMinimapButton()
+        Print("Loaded. Click minimap button to configure.")
+        
+    elseif event == "MAIL_SHOW" then
+        -- Trigger logic
+        BuildMailQueue()
+        
+    elseif event == "MAIL_SEND_SUCCESS" then
+        if isProcessing then
+            -- Move to next task
+            currentQueueIndex = currentQueueIndex + 1
+        end
+        
+    elseif event == "MAIL_CLOSED" then
+        if isProcessing then
+            isProcessing = false
+            QueueFrame:Hide()
+            Print("Mail closed. Auto-send stopped.")
+        end
     end
 end)
