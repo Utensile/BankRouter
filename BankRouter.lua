@@ -1,29 +1,24 @@
 -- =============================================================
 -- BANKROUTER
 -- Automated Item Mailing for Turtle WoW (Vanilla 1.12.1)
+-- Logic adapted from TurtleMail (Event-driven instead of Timer)
 -- =============================================================
 
 -- CONFIGURATION
 -- -------------------------------------------------------------
--- Define which items go to which character.
--- Format: ["Item Name"] = "CharacterName",
 local config = {
-    ["Red Wolf Meat"]    = "Tension",
-    ["Silk Cloth"]  = "Tension",
-    ["Mageweave Cloth"]= "Tension",
+    ["Runecloth"]    = "ClothBankToon",
+    ["Thorium Ore"]  = "OreBankToon",
+    ["Light Leather"]= "LeatherToon",
     ["Strange Dust"] = "EnchantToon",
 }
-
--- Time in seconds between mails to avoid server disconnects.
--- 1.0 is safe. 0.5 is risky.
-local MAIL_DELAY = 1.0 
 
 -- STATE VARIABLES
 -- -------------------------------------------------------------
 local mailQueue = {}       -- Holds the list of items to send
-local processing = false   -- Is the addon currently working?
-local timerFrame = CreateFrame("Frame")
-local timeSinceLast = 0
+local processing = false   -- Are we currently in the middle of a batch?
+local pendingSend = false  -- Trigger for the OnUpdate loop
+local eventFrame = CreateFrame("Frame")
 
 -- UTILITIES
 -- -------------------------------------------------------------
@@ -31,19 +26,56 @@ local function Print(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cff00ccff[BankRouter]|r " .. msg)
 end
 
--- LOGIC: SCANNING
+-- CORE FUNCTIONS
 -- -------------------------------------------------------------
+
+-- 1. The function that physically sends the mail
+local function ProcessNextItem()
+    -- Safety check: Stop if mailbox closed
+    if not MailFrame:IsVisible() then
+        processing = false
+        pendingSend = false
+        Print("Mailbox closed. Stopping.")
+        return
+    end
+
+    -- Get next item
+    local work = table.remove(mailQueue, 1)
+
+    if work then
+        -- Clear fields
+        SendMailNameEditBox:SetText("")
+        SendMailSubjectEditBox:SetText("")
+        
+        -- Switch to Send tab
+        MailFrameTab2:Click()
+        
+        -- Pickup and attach
+        PickupContainerItem(work.bag, work.slot)
+        ClickSendMailItemButton()
+        
+        -- Send
+        SendMail(work.recipient, work.name, "BankRouter Auto-Send")
+        Print("Sent " .. work.name .. " to " .. work.recipient)
+        
+        -- We remain in 'processing' state, but wait for the event to trigger the next one
+    else
+        -- Queue is empty
+        processing = false
+        pendingSend = false
+        Print("All items sent!")
+    end
+end
+
+-- 2. The Scanner (Starts the loop)
 local function ScanBagsAndQueue()
-    mailQueue = {} -- Clear previous queue
+    mailQueue = {} 
     
     for bag = 0, 4 do
         for slot = 1, GetContainerNumSlots(bag) do
             local link = GetContainerItemLink(bag, slot)
             if link then
-                -- Extract item name from the link string
                 local itemName = string.match(link, "%[(.*)%]")
-                
-                -- Check if this item is in our config list
                 if config[itemName] then
                     table.insert(mailQueue, {
                         bag = bag,
@@ -58,58 +90,49 @@ local function ScanBagsAndQueue()
 
     local count = table.getn(mailQueue)
     if count > 0 then
-        Print("Found " .. count .. " items to route. Starting...")
+        Print("Found " .. count .. " items. Sending first item...")
         processing = true
+        ProcessNextItem() -- Send the first one immediately to start the chain
     else
-        Print("No configured items found in bags.")
+        Print("No configured items found.")
     end
 end
 
--- LOGIC: PROCESSING LOOP
+-- EVENT HANDLING
 -- -------------------------------------------------------------
-timerFrame:SetScript("OnUpdate", function()
+eventFrame:RegisterEvent("MAIL_SEND_SUCCESS")
+eventFrame:RegisterEvent("UI_ERROR_MESSAGE")
+
+eventFrame:SetScript("OnEvent", function()
     if not processing then return end
 
-    -- Update timer
-    timeSinceLast = timeSinceLast + arg1
-    if timeSinceLast < MAIL_DELAY then return end
-    
-    -- Reset timer
-    timeSinceLast = 0
-
-    -- Safety Check: Is Mail Frame still open?
-    if not MailFrame:IsVisible() then
-        processing = false
-        Print("Mailbox closed. Stopping.")
-        return
-    end
-
-    -- Process next item
-    local work = table.remove(mailQueue, 1)
-    if work then
-        -- 1. Clear fields
-        SendMailNameEditBox:SetText("")
-        SendMailSubjectEditBox:SetText("")
+    if event == "MAIL_SEND_SUCCESS" then
+        -- Success! Flag the OnUpdate loop to send the next one.
+        -- We use a flag instead of calling directly to avoid stack overflow or script limits.
+        pendingSend = true
         
-        -- 2. Ensure we are on the Send Mail tab
-        MailFrameTab2:Click()
-        
-        -- 3. Pickup and attach item
-        PickupContainerItem(work.bag, work.slot)
-        ClickSendMailItemButton()
-        
-        -- 4. Send
-        SendMail(work.recipient, work.name, "BankRouter Auto-Send")
-        
-        Print("Sent " .. work.name .. " to " .. work.recipient)
-    else
-        -- Queue empty
-        processing = false
-        Print("All items sent!")
+    elseif event == "UI_ERROR_MESSAGE" then
+        -- If we get an error (bag full, target not found), stop immediately.
+        -- Common errors: ERR_MAIL_TARGET_NOT_FOUND, ERR_MAIL_MAILBOX_FULL
+        if arg1 == ERR_MAIL_TARGET_NOT_FOUND or arg1 == ERR_MAIL_MAILBOX_FULL then
+            processing = false
+            pendingSend = false
+            Print("Error encountered: " .. arg1 .. ". Stopping.")
+        end
     end
 end)
 
--- UI: BUTTON CREATION
+-- LOGIC LOOP
+-- -------------------------------------------------------------
+-- This mimics TurtleMail's 'on_update' check
+eventFrame:SetScript("OnUpdate", function()
+    if processing and pendingSend then
+        pendingSend = false
+        ProcessNextItem()
+    end
+end)
+
+-- UI BUTTON
 -- -------------------------------------------------------------
 local btn = CreateFrame("Button", "BankRouterBtn", MailFrame, "UIPanelButtonTemplate")
 btn:SetWidth(120)
@@ -120,10 +143,11 @@ btn:SetText("Auto Route")
 btn:SetScript("OnClick", function()
     if processing then
         processing = false
+        pendingSend = false
         Print("Stopped.")
     else
         ScanBagsAndQueue()
     end
 end)
 
-Print("Loaded. Open a mailbox to use.")
+Print("BankRouter (Event Mode) Loaded.")
