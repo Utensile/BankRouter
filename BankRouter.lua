@@ -7,9 +7,9 @@
 -- CONFIGURATION
 -- -------------------------------------------------------------
 local config = {
-    ["Runecloth"]    = "ClothBankToon",
-    ["Thorium Ore"]  = "OreBankToon",
-    ["Light Leather"]= "LeatherToon",
+    ["Red Wolf Meat"]    = "Knabe",
+    ["Silk Cloth"]  = "Knabe",
+    ["Mageweave Cloth"]= "Knabe",
     ["Strange Dust"] = "EnchantToon",
 }
 
