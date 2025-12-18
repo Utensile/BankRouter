@@ -1,24 +1,16 @@
 -- =============================================================
--- BANKROUTER v1.4
--- Fix: Added frame delay between Tab Switch and Item Attachment
--- to prevent items from dropping off the cursor.
+-- BANKROUTER v1.5
+-- Fixes: 
+-- 1. Adopted TurtleMail's exact item attachment sequence.
+-- 2. Fixed SavedVariables resetting on reload.
 -- =============================================================
-
--- DEFAULT SETTINGS
--- -------------------------------------------------------------
-local defaultRoutes = {
-    ["Silk Cloth"]     = "Knabe",
-    ["Mageweave Cloth"]   = "Knabe",
-    ["Light Leather"] = "LeatherToon",
-}
 
 -- STATE VARIABLES
 -- -------------------------------------------------------------
 local mailQueue = {}
 local processing = false
 local pendingSend = false
-local sendStep = 1          -- 1 = Prepare (Tab Switch), 2 = Attach & Send
-local currentWork = nil     -- Holds the item we are currently working on
+local currentWork = nil
 local eventFrame = CreateFrame("Frame")
 local configFrame = nil 
 local scrollChild = nil 
@@ -32,95 +24,84 @@ end
 -- DATABASE INIT
 -- -------------------------------------------------------------
 function BankRouter_InitDB()
-    if not BankRouterDB then BankRouterDB = {} end
-    if not BankRouterDB.routes then BankRouterDB.routes = defaultRoutes end
+    if not BankRouterDB then 
+        BankRouterDB = {} 
+    end
+    
+    -- Only load defaults if the table is completely missing (First run)
+    if BankRouterDB.routes == nil then
+        BankRouterDB.routes = {
+            ["Runecloth"]     = "ClothBankToon",
+            ["Thorium Ore"]   = "OreBankToon",
+            ["Light Leather"] = "LeatherToon",
+        }
+        Print("First run detected. Default routes loaded.")
+    end
+
     if not BankRouterDB.minimapPos then BankRouterDB.minimapPos = 45 end
 end
 
 -- =============================================================
--- LOGIC: MAILING (Step-Based)
+-- LOGIC: MAILING (TurtleMail Style)
 -- =============================================================
 
-local function ProcessLogic()
-    -- Global Safety Check
+local function ProcessNextItem()
+    -- Safety Check
     if not MailFrame:IsVisible() then
         processing = false
         pendingSend = false
-        sendStep = 1
         Print("Mailbox closed. Stopping.")
         return
     end
 
-    -- STEP 1: PREPARATION (Switch Tab & Clean Up)
-    if sendStep == 1 then
-        -- Get next item if we don't have one
-        if not currentWork then
-            currentWork = table.remove(mailQueue, 1)
-        end
+    -- Get next item
+    local work = table.remove(mailQueue, 1)
 
-        if not currentWork then
-            -- Queue Empty
-            processing = false
-            Print("All items sent!")
-            return
-        end
-
-        -- Switch to Send Tab if not already visible
+    if work then
+        -- 1. Ensure we are on the Send Mail tab
         if not SendMailFrame:IsVisible() then
             MailFrameTab2:Click()
         end
 
-        -- Clear Cursor and Slot (Hygiene)
-        ClearCursor()
-        ClickSendMailItemButton() -- Clears slot if something was there
-        ClearCursor()             -- Destroys whatever we picked up
-
-        -- Clear Text Fields
+        -- 2. Clear Text Fields
         SendMailNameEditBox:SetText("")
         SendMailSubjectEditBox:SetText("")
         SendMailBodyEditBox:SetText("")
 
-        -- Move to Step 2 next frame
-        sendStep = 2
-        return -- End execution for this frame
-    end
-
-    -- STEP 2: ATTACH AND SEND
-    if sendStep == 2 then
-        -- Validate we still have work
-        if not currentWork then 
-            sendStep = 1; return 
-        end
-
-        -- 1. Pickup Item from Bag
-        PickupContainerItem(currentWork.bag, currentWork.slot)
+        -- 3. THE TURTLEMAIL SEQUENCE
+        -- We must rigorously clear the cursor and slot to prevent "Gray Item" lockups.
         
-        -- 2. Drop into Mail Slot
-        ClickSendMailItemButton()
+        ClearCursor()               -- 1. Empty hand
+        ClickSendMailItemButton()   -- 2. Click slot (drops whatever is there or clears lock)
+        ClearCursor()               -- 3. Empty hand again
         
-        -- 3. Verify Attachment
-        local attachedName = GetSendMailItem()
+        PickupContainerItem(work.bag, work.slot) -- 4. Pick up the new item
+        ClickSendMailItemButton()   -- 5. Drop it in the slot
         
-        if attachedName then
-            -- Success: Item is in the slot
-            SendMail(currentWork.recipient, "", "")
-            Print("Sent " .. currentWork.name .. " to " .. currentWork.recipient)
+        -- 4. VERIFY ATTACHMENT
+        if GetSendMailItem() then
+            -- Success: Item is attached.
+            -- Send with empty subject (Game will auto-fill subject with item name usually, 
+            -- or we send blank "" as requested).
+            SendMail(work.recipient, "", "")
             
-            -- Reset for next item (wait for MAIL_SEND_SUCCESS event)
-            currentWork = nil
-            sendStep = 1
-            pendingSend = false -- Wait for event
+            Print("Sent " .. work.name .. " to " .. work.recipient)
+            
+            -- Wait for MAIL_SEND_SUCCESS event before doing next
+            pendingSend = false 
         else
-            -- Failure: Item didn't stick
-            -- This usually means the item is locked or the slot wasn't ready.
-            -- We skip this item to avoid infinite loops.
-            Print("Error: Could not attach " .. currentWork.name .. ". Skipping.")
-            ClearCursor() -- Ensure cursor is empty
+            -- Failure: Item failed to attach.
+            Print("Error: Could not attach " .. work.name .. ". Skipping.")
+            ClearCursor() -- Clean up hand
             
-            currentWork = nil
-            sendStep = 1
-            pendingSend = true -- Immediately try next item (no event to wait for)
+            -- Try next item immediately
+            pendingSend = true 
         end
+    else
+        -- Queue Empty
+        processing = false
+        pendingSend = false
+        Print("All items sent!")
     end
 end
 
@@ -150,7 +131,6 @@ local function ScanBagsAndQueue()
         Print("Found " .. count .. " items. Sending...")
         processing = true
         pendingSend = true -- Start the loop
-        sendStep = 1       -- Start at Step 1
     else
         Print("No configured items found in bags.")
     end
@@ -326,13 +306,12 @@ eventFrame:SetScript("OnEvent", function()
 end)
 
 eventFrame:SetScript("OnUpdate", function()
-    -- If we have a pending signal, execute logic
     if processing and pendingSend then
-        ProcessLogic()
+        ProcessNextItem()
     end
 end)
 
--- BUTTON IN MAILBOX
+-- MAILBOX BUTTON
 local btn = CreateFrame("Button", "BankRouterBtn", MailFrame, "UIPanelButtonTemplate")
 btn:SetWidth(120); btn:SetHeight(25)
 btn:SetPoint("TOPRIGHT", MailFrame, "TOPRIGHT", -50, -40)
