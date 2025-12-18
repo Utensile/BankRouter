@@ -15,14 +15,13 @@ local function Print(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cff00ccff[BankRouter]|r " .. msg)
 end
 
--- Helper: Get Item Name from Link
+-- Helper: Get Item Name from Link (FIXED)
+-- Extracts the name cleanly using pattern matching instead of substring math
 local function GetItemNameFromLink(link)
     if not link then return nil end
-    local name = string.find(link, "%[(.+)%]")
-    if name then
-        return string.sub(link, name + 1, string.len(link) - 4)
-    end
-    return nil
+    -- Finds the text inside the square brackets [Name]
+    local _, _, name = string.find(link, "%[(.+)%]")
+    return name
 end
 
 -- =============================================================
@@ -87,6 +86,7 @@ end
 --  CONFIGURATION GUI
 -- =============================================================
 local function UpdateRouteList(scrollChild)
+    -- Clean up old frames
     local kids = {scrollChild:GetChildren()}
     for _, child in ipairs(kids) do
         child:Hide()
@@ -94,7 +94,9 @@ local function UpdateRouteList(scrollChild)
     end
 
     local yOffset = 0
-    for item, recipient in pairs(BankRouterDB.routes) do
+    
+    -- Iterate through the database table
+    for itemName, recipientName in pairs(BankRouterDB.routes) do
         local row = CreateFrame("Frame", nil, scrollChild)
         row:SetWidth(260)
         row:SetHeight(20)
@@ -102,18 +104,29 @@ local function UpdateRouteList(scrollChild)
 
         local text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         text:SetPoint("LEFT", row, "LEFT", 0, 0)
-        text:SetText("|cffffd100" .. item .. "|r  ->  " .. recipient)
+        text:SetText("|cffffd100" .. itemName .. "|r  ->  " .. recipientName)
 
         local delBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
         delBtn:SetWidth(20)
         delBtn:SetHeight(20)
         delBtn:SetPoint("RIGHT", row, "RIGHT", -5, 0)
         delBtn:SetText("X")
+        
+        -- FIX: Store the specific item name on the button itself
+        -- This prevents the "nil index" error by not relying on the loop variable
+        delBtn.itemName = itemName 
+        
         delBtn:SetScript("OnClick", function()
-            BankRouterDB.routes[item] = nil
-            UpdateRouteList(scrollChild)
-            Print("Removed route for: " .. item)
+            -- Retrieve the name from 'this' (the button that was clicked)
+            local itemToDelete = this.itemName
+            
+            if itemToDelete then
+                BankRouterDB.routes[itemToDelete] = nil
+                UpdateRouteList(scrollChild)
+                Print("Removed route for: " .. itemToDelete)
+            end
         end)
+
         yOffset = yOffset - 22
     end
 end
@@ -169,7 +182,7 @@ local function CreateConfigFrame()
     addBtn:SetPoint("TOP", f, "TOP", 0, -85)
     addBtn:SetText("Add / Update Route")
 
-    -- FIX: Added specific name "BankRouterConfigScrollFrame" so the template works
+    -- Scroll Frame with Unique Name
     local scrollFrame = CreateFrame("ScrollFrame", "BankRouterConfigScrollFrame", f, "UIPanelScrollFrameTemplate")
     scrollFrame:SetPoint("TOPLEFT", f, "TOPLEFT", 15, -120)
     scrollFrame:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -35, 15)
@@ -253,6 +266,7 @@ local function BuildMailQueue()
     currentQueueIndex = 1
     
     local tasksByRecipient = {} 
+    local foundCount = 0
 
     for bag = 0, 4 do
         for slot = 1, GetContainerNumSlots(bag) do
@@ -260,9 +274,14 @@ local function BuildMailQueue()
             if link then
                 local name = GetItemNameFromLink(link)
                 local recipient = BankRouterDB.routes[name]
+                
+                -- Debug: Remove this comment if needed to check what the addon sees
+                -- if name == "Silk Cloth" then Print("Found Silk Cloth!") end
+
                 if recipient then
                     if not tasksByRecipient[recipient] then tasksByRecipient[recipient] = {} end
                     table.insert(tasksByRecipient[recipient], {bag=bag, slot=slot, name=name})
+                    foundCount = foundCount + 1
                 end
             end
         end
@@ -286,7 +305,7 @@ local function BuildMailQueue()
     end
 
     if table.getn(queue) > 0 then
-        Print("Found items to route. Starting...")
+        Print("Found " .. foundCount .. " items to route. Starting...")
         isProcessing = true
         QueueFrame:Show()
     else
@@ -298,21 +317,15 @@ end
 --  MAILBOX GUI BUTTON
 -- =============================================================
 local function CreateMailboxButton()
-    -- Create a button attached to the MailFrame
     local btn = CreateFrame("Button", "BankRouterSendButton", MailFrame, "UIPanelButtonTemplate")
     btn:SetWidth(100)
     btn:SetHeight(25)
-    -- Position it at the top left of the MailFrame
-    btn:SetPoint("TOPLEFT", MailFrame, "TOPLEFT", 60, -15)
+    btn:SetPoint("TOPRIGHT", MailFrame, "TOPRIGHT", -60, -60)
     btn:SetText("Router Send")
     
     btn:SetScript("OnClick", function()
         BuildMailQueue()
     end)
-    
-    -- Only show the button when we are on the Send Mail tab (optional, but cleaner)
-    -- For simplicity in 1.12, showing it always on the frame is fine, or we can hook the tabs.
-    -- We will leave it visible on the MailFrame generally.
 end
 
 -- =============================================================
@@ -326,7 +339,7 @@ BR:SetScript("OnEvent", function()
         
         CreateConfigFrame()
         CreateMinimapButton()
-        CreateMailboxButton() -- Create the trigger button
+        CreateMailboxButton()
         Print("Loaded.")
         
     elseif event == "MAIL_SEND_SUCCESS" then
