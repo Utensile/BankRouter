@@ -197,58 +197,73 @@ end
 -- =============================================================
 
 local function PrepareNextBatch()
-    -- 1. Scan bags and find the FIRST recipient that has available items
-    local foundItems = {} -- Key: Recipient, Value: { {bag=, slot=, name=} }
+    local myName = UnitName("player")
+    local targetRecipient = nil
+    local targetSubject = nil
+    local itemsToAttach = {}
     
+    -- Scan to find the FIRST recipient we need to service
     for bag = 0, 4 do
         for slot = 1, GetContainerNumSlots(bag) do
-            -- GetContainerItemInfo returns texture, count, locked, quality, readable
-            -- We MUST check 'locked'. If it's locked, it's already in the mail window or being moved.
             local texture, count, locked = GetContainerItemInfo(bag, slot)
             
             if texture and not locked then
                 local link = GetContainerItemLink(bag, slot)
                 local name = GetItemNameFromLink(link)
-                local recipient = BankRouterDB.routes[name]
+                local routeRecipient = BankRouterDB.routes[name]
                 
-                if recipient then
-                    if not foundItems[recipient] then foundItems[recipient] = {} end
-                    table.insert(foundItems[recipient], {bag=bag, slot=slot, name=name})
+                -- Is there a route? And are we NOT mailing ourselves?
+                if routeRecipient and routeRecipient ~= myName then
+                    
+                    -- Logic:
+                    -- If we haven't picked a target yet, pick this one.
+                    -- If we HAVE picked a target, only add items if they match that target.
+                    
+                    if not targetRecipient then
+                        targetRecipient = routeRecipient
+                        targetSubject = name -- Use first item name as subject
+                    end
+                    
+                    if routeRecipient == targetRecipient then
+                        if table.getn(itemsToAttach) < 12 then
+                            table.insert(itemsToAttach, {bag=bag, slot=slot})
+                        end
+                    end
                 end
             end
         end
     end
 
-    -- 2. Pick the first recipient that has items
-    local targetRecipient, items = next(foundItems)
-    
     if not targetRecipient then
-        Print("No more items found to route.")
+        Print("No routable items found (or all items belong to this character).")
         return
     end
 
-    -- 3. Prepare the Mail Frame
     -- Switch to Send Tab
     MailFrameTab2:Click() 
     
-    -- Clear previous info just in case (though usually sending clears it)
+    -- Clear Fields
     SendMailNameEditBox:SetText("")
     SendMailSubjectEditBox:SetText("")
     
+    -- Set Recipient
     SendMailNameEditBox:SetText(targetRecipient)
-    SendMailSubjectEditBox:SetText("BankRouter Shipment")
     
-    -- 4. Attach up to 12 items
-    local attachedCount = 0
-    for _, itemData in ipairs(items) do
-        if attachedCount >= 12 then break end
-        
-        -- UseContainerItem puts it in the mail slot
-        UseContainerItem(itemData.bag, itemData.slot)
-        attachedCount = attachedCount + 1
+    -- Set Subject (BankRouter: ItemName)
+    if targetSubject then
+        SendMailSubjectEditBox:SetText("BankRouter: " .. targetSubject)
+    else
+        SendMailSubjectEditBox:SetText("BankRouter Shipment")
     end
     
-    Print("Prepared batch for " .. targetRecipient .. " (" .. attachedCount .. " items). Press Send when ready.")
+    -- Attach Items
+    local count = 0
+    for _, item in ipairs(itemsToAttach) do
+        UseContainerItem(item.bag, item.slot)
+        count = count + 1
+    end
+    
+    Print("Prepared batch for " .. targetRecipient .. " containing " .. count .. " items.")
 end
 
 -- =============================================================
@@ -259,8 +274,7 @@ local function CreateMailboxButton()
     btn:SetWidth(100)
     btn:SetHeight(25)
     
-    -- Position: Below the standard "Send" button (SendMailMailButton)
-    -- We attach it to the SendMailMailButton so it moves with it if the UI scales
+    -- Position: Below the "Send" button
     btn:SetPoint("TOP", "SendMailMailButton", "BOTTOM", 0, -5)
     
     btn:SetText("Prepare Batch")
@@ -268,9 +282,6 @@ local function CreateMailboxButton()
     btn:SetScript("OnClick", function()
         PrepareNextBatch()
     end)
-    
-    -- Optional: Only show this button when on the "Send Mail" tab (Tab 2)
-    -- But in 1.12 simple is better; it will be visible on the frame.
 end
 
 -- =============================================================
