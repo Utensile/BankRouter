@@ -1,6 +1,7 @@
 -- =============================================================
--- BANKROUTER v1.3
--- Fixed Minimap Toggle & Safer Item Attachment
+-- BANKROUTER v1.4
+-- Fix: Added frame delay between Tab Switch and Item Attachment
+-- to prevent items from dropping off the cursor.
 -- =============================================================
 
 -- DEFAULT SETTINGS
@@ -16,6 +17,8 @@ local defaultRoutes = {
 local mailQueue = {}
 local processing = false
 local pendingSend = false
+local sendStep = 1          -- 1 = Prepare (Tab Switch), 2 = Attach & Send
+local currentWork = nil     -- Holds the item we are currently working on
 local eventFrame = CreateFrame("Frame")
 local configFrame = nil 
 local scrollChild = nil 
@@ -35,56 +38,89 @@ function BankRouter_InitDB()
 end
 
 -- =============================================================
--- LOGIC: MAILING (Event-Driven)
+-- LOGIC: MAILING (Step-Based)
 -- =============================================================
 
-local function ProcessNextItem()
-    -- Safety Check
+local function ProcessLogic()
+    -- Global Safety Check
     if not MailFrame:IsVisible() then
         processing = false
         pendingSend = false
+        sendStep = 1
         Print("Mailbox closed. Stopping.")
         return
     end
 
-    local work = table.remove(mailQueue, 1)
+    -- STEP 1: PREPARATION (Switch Tab & Clean Up)
+    if sendStep == 1 then
+        -- Get next item if we don't have one
+        if not currentWork then
+            currentWork = table.remove(mailQueue, 1)
+        end
 
-    if work then
-        -- 1. Ensure we are on the Send Mail tab
+        if not currentWork then
+            -- Queue Empty
+            processing = false
+            Print("All items sent!")
+            return
+        end
+
+        -- Switch to Send Tab if not already visible
         if not SendMailFrame:IsVisible() then
             MailFrameTab2:Click()
         end
 
-        -- 2. Clear fields
+        -- Clear Cursor and Slot (Hygiene)
+        ClearCursor()
+        ClickSendMailItemButton() -- Clears slot if something was there
+        ClearCursor()             -- Destroys whatever we picked up
+
+        -- Clear Text Fields
         SendMailNameEditBox:SetText("")
         SendMailSubjectEditBox:SetText("")
         SendMailBodyEditBox:SetText("")
+
+        -- Move to Step 2 next frame
+        sendStep = 2
+        return -- End execution for this frame
+    end
+
+    -- STEP 2: ATTACH AND SEND
+    if sendStep == 2 then
+        -- Validate we still have work
+        if not currentWork then 
+            sendStep = 1; return 
+        end
+
+        -- 1. Pickup Item from Bag
+        PickupContainerItem(currentWork.bag, currentWork.slot)
         
-        -- 3. Attach Item
-        PickupContainerItem(work.bag, work.slot)
+        -- 2. Drop into Mail Slot
         ClickSendMailItemButton()
         
-        -- 4. VERIFY ATTACHMENT (The Fix)
-        -- We check if an item is actually in the mail slot. 
-        -- If GetSendMailItem() returns nil, the pickup failed.
+        -- 3. Verify Attachment
         local attachedName = GetSendMailItem()
         
         if attachedName then
-            -- Item is there, safe to send.
-            -- Using "" for subject as requested. The game might auto-fill it, 
-            -- or send it blank.
-            SendMail(work.recipient, "", "")
-            Print("Sent " .. work.name .. " to " .. work.recipient)
+            -- Success: Item is in the slot
+            SendMail(currentWork.recipient, "", "")
+            Print("Sent " .. currentWork.name .. " to " .. currentWork.recipient)
+            
+            -- Reset for next item (wait for MAIL_SEND_SUCCESS event)
+            currentWork = nil
+            sendStep = 1
+            pendingSend = false -- Wait for event
         else
-            -- Attachment failed (Item locked or missing). Skip this item.
-            Print("Error: Could not attach " .. work.name .. ". Skipping.")
-            pendingSend = true -- Immediately trigger next cycle to keep going
+            -- Failure: Item didn't stick
+            -- This usually means the item is locked or the slot wasn't ready.
+            -- We skip this item to avoid infinite loops.
+            Print("Error: Could not attach " .. currentWork.name .. ". Skipping.")
+            ClearCursor() -- Ensure cursor is empty
+            
+            currentWork = nil
+            sendStep = 1
+            pendingSend = true -- Immediately try next item (no event to wait for)
         end
-    else
-        -- Queue Empty
-        processing = false
-        pendingSend = false
-        Print("All items sent!")
     end
 end
 
@@ -113,7 +149,8 @@ local function ScanBagsAndQueue()
     if count > 0 then
         Print("Found " .. count .. " items. Sending...")
         processing = true
-        ProcessNextItem() 
+        pendingSend = true -- Start the loop
+        sendStep = 1       -- Start at Step 1
     else
         Print("No configured items found in bags.")
     end
@@ -122,16 +159,11 @@ end
 -- =============================================================
 -- UI: CONFIGURATION WINDOW
 -- =============================================================
-
 local function RefreshConfigList()
-    -- Clear current list
     local children = { scrollChild:GetChildren() }
     for _, child in ipairs(children) do 
-        child:Hide() 
-        child:SetParent(nil)
+        child:Hide(); child:SetParent(nil)
     end
-
-    -- Rebuild list
     local yOffset = 0
     for item, recipient in pairs(BankRouterDB.routes) do
         local row = CreateFrame("Frame", nil, scrollChild)
@@ -156,9 +188,7 @@ local function RefreshConfigList()
 end
 
 local function CreateConfigFrame()
-    if configFrame then return end -- If it exists, do nothing
-
-    -- Main Frame
+    if configFrame then return end
     configFrame = CreateFrame("Frame", "BankRouterConfig", UIParent)
     configFrame:SetWidth(300); configFrame:SetHeight(350)
     configFrame:SetPoint("CENTER", UIParent, "CENTER")
@@ -168,14 +198,12 @@ local function CreateConfigFrame()
         tile = true, tileSize = 32, edgeSize = 32, 
         insets = { left = 11, right = 12, top = 12, bottom = 11 }
     })
-    configFrame:EnableMouse(true)
-    configFrame:SetMovable(true)
+    configFrame:EnableMouse(true); configFrame:SetMovable(true)
     configFrame:RegisterForDrag("LeftButton")
     configFrame:SetScript("OnDragStart", function() this:StartMoving() end)
     configFrame:SetScript("OnDragStop", function() this:StopMovingOrSizing() end)
-    configFrame:Hide() -- Start hidden
+    configFrame:Hide()
 
-    -- Header
     local header = configFrame:CreateTexture(nil, "ARTWORK")
     header:SetTexture("Interface\\DialogFrame\\UI-DialogBox-Header")
     header:SetWidth(256); header:SetHeight(64)
@@ -184,23 +212,19 @@ local function CreateConfigFrame()
     title:SetPoint("TOP", header, "TOP", 0, -14)
     title:SetText("BankRouter Config")
 
-    -- Close Button
     local closeBtn = CreateFrame("Button", nil, configFrame, "UIPanelCloseButton")
     closeBtn:SetPoint("TOPRIGHT", -5, -5)
     closeBtn:SetScript("OnClick", function() configFrame:Hide() end)
 
-    -- ADD NEW SECTION
     local inputItem = CreateFrame("EditBox", nil, configFrame, "InputBoxTemplate")
     inputItem:SetWidth(110); inputItem:SetHeight(20)
     inputItem:SetPoint("TOPLEFT", 20, -40)
-    inputItem:SetAutoFocus(false)
-    inputItem:SetText("Item Name")
+    inputItem:SetAutoFocus(false); inputItem:SetText("Item Name")
 
     local inputTo = CreateFrame("EditBox", nil, configFrame, "InputBoxTemplate")
     inputTo:SetWidth(100); inputTo:SetHeight(20)
     inputTo:SetPoint("LEFT", inputItem, "RIGHT", 10, 0)
-    inputTo:SetAutoFocus(false)
-    inputTo:SetText("Recipient")
+    inputTo:SetAutoFocus(false); inputTo:SetText("Recipient")
 
     local btnAdd = CreateFrame("Button", nil, configFrame, "UIPanelButtonTemplate")
     btnAdd:SetWidth(40); btnAdd:SetHeight(20)
@@ -216,140 +240,14 @@ local function CreateConfigFrame()
         end
     end)
 
-    -- LIST SCROLL FRAME
     local scrollFrame = CreateFrame("ScrollFrame", "BankRouterScroll", configFrame, "UIPanelScrollFrameTemplate")
     scrollFrame:SetPoint("TOPLEFT", 20, -75)
     scrollFrame:SetWidth(240); scrollFrame:SetHeight(240)
-
     scrollChild = CreateFrame("Frame", nil, scrollFrame)
     scrollChild:SetWidth(240); scrollChild:SetHeight(10)
     scrollFrame:SetScrollChild(scrollChild)
-
+    
     local listBg = configFrame:CreateTexture(nil, "BACKGROUND")
     listBg:SetPoint("TOPLEFT", scrollFrame, -5, 5)
     listBg:SetPoint("BOTTOMRIGHT", scrollFrame, 25, -5)
-    listBg:SetTexture(0, 0, 0, 0.3)
-
-    RefreshConfigList()
-end
-
--- =============================================================
--- UI: MINIMAP BUTTON
--- =============================================================
-local mmBtn = CreateFrame("Button", "BankRouterMinimapBtn", Minimap)
-mmBtn:SetFrameStrata("LOW")
-mmBtn:SetWidth(32); mmBtn:SetHeight(32)
-mmBtn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-mmBtn:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
-
-local icon = mmBtn:CreateTexture(nil, "BACKGROUND")
-icon:SetTexture("Interface\\Icons\\INV_Letter_15") 
-icon:SetWidth(20); icon:SetHeight(20)
-icon:SetPoint("CENTER", 0, 0)
-
-local border = mmBtn:CreateTexture(nil, "OVERLAY")
-border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
-border:SetWidth(52); border:SetHeight(52)
-border:SetPoint("TOPLEFT", 0, 0)
-
--- Minimap Movement
-local function UpdateMinimapPosition()
-    local angle = math.rad(BankRouterDB.minimapPos or 45)
-    local x, y = math.cos(angle), math.sin(angle)
-    mmBtn:SetPoint("CENTER", Minimap, "CENTER", x * 80, y * 80)
-end
-
-mmBtn:SetMovable(true)
-mmBtn:RegisterForDrag("LeftButton")
-mmBtn:SetScript("OnDragStart", function() this:LockHighlight(); this.isDragging = true end)
-mmBtn:SetScript("OnDragStop", function() this:UnlockHighlight(); this.isDragging = false end)
-mmBtn:SetScript("OnUpdate", function()
-    if this.isDragging then
-        local mx, my = Minimap:GetCenter()
-        local px, py = GetCursorPosition()
-        local scale = UIParent:GetScale()
-        px, py = px / scale, py / scale
-        local angle = math.deg(math.atan2(py - my, px - mx))
-        BankRouterDB.minimapPos = angle
-        UpdateMinimapPosition()
-    end
-end)
-
--- MINIMAP CLICK (FIXED)
-mmBtn:SetScript("OnClick", function() 
-    BankRouter_InitDB()
-    CreateConfigFrame() -- Create if missing
-    
-    if configFrame:IsVisible() then 
-        configFrame:Hide() 
-    else 
-        configFrame:Show() 
-    end
-end)
-
-mmBtn:SetScript("OnEnter", function()
-    GameTooltip:SetOwner(this, "ANCHOR_LEFT")
-    GameTooltip:AddLine("BankRouter")
-    GameTooltip:AddLine("Click to configure.", 1,1,1)
-    GameTooltip:Show()
-end)
-mmBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-
-
--- =============================================================
--- MAIN EVENT LOOP
--- =============================================================
-eventFrame:RegisterEvent("ADDON_LOADED")
-eventFrame:RegisterEvent("MAIL_SEND_SUCCESS")
-eventFrame:RegisterEvent("UI_ERROR_MESSAGE")
-eventFrame:RegisterEvent("MAIL_SHOW")
-
-eventFrame:SetScript("OnEvent", function()
-    if event == "ADDON_LOADED" and arg1 == "BankRouter" then
-        BankRouter_InitDB()
-        UpdateMinimapPosition()
-    end
-
-    if event == "MAIL_SHOW" then
-        if BankRouterBtn then BankRouterBtn:Show() end
-    end
-
-    if not processing then return end
-
-    if event == "MAIL_SEND_SUCCESS" then
-        pendingSend = true
-    elseif event == "UI_ERROR_MESSAGE" then
-        if arg1 == ERR_MAIL_TARGET_NOT_FOUND or arg1 == ERR_MAIL_MAILBOX_FULL then
-            processing = false
-            Print("Error: " .. arg1 .. ". Stopping.")
-        end
-    end
-end)
-
-eventFrame:SetScript("OnUpdate", function()
-    if processing and pendingSend then
-        pendingSend = false
-        ProcessNextItem()
-    end
-end)
-
--- MAILBOX BUTTON
-local btn = CreateFrame("Button", "BankRouterBtn", MailFrame, "UIPanelButtonTemplate")
-btn:SetWidth(120); btn:SetHeight(25)
-btn:SetPoint("TOPRIGHT", MailFrame, "TOPRIGHT", -50, -40)
-btn:SetText("Auto Route")
-btn:SetScript("OnClick", function()
-    if processing then
-        processing = false; Print("Stopped.")
-    else
-        ScanBagsAndQueue()
-    end
-end)
-
--- Hook Tab click (Visibility Logic)
-local original_MailFrameTab_OnClick = MailFrameTab_OnClick
-function MailFrameTab_OnClick(tab)
-    original_MailFrameTab_OnClick(tab)
-    if not tab then tab = this:GetID() end
-    if tab == 1 then BankRouterBtn:Show() else BankRouterBtn:Hide() end
-end
+    list
