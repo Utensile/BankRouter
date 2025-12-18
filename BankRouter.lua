@@ -250,4 +250,100 @@ local function CreateConfigFrame()
     local listBg = configFrame:CreateTexture(nil, "BACKGROUND")
     listBg:SetPoint("TOPLEFT", scrollFrame, -5, 5)
     listBg:SetPoint("BOTTOMRIGHT", scrollFrame, 25, -5)
-    list
+    listBg:SetTexture(0, 0, 0, 0.3)
+    RefreshConfigList()
+end
+
+-- =============================================================
+-- UI: MINIMAP BUTTON
+-- =============================================================
+local mmBtn = CreateFrame("Button", "BankRouterMinimapBtn", Minimap)
+mmBtn:SetFrameStrata("LOW"); mmBtn:SetWidth(32); mmBtn:SetHeight(32)
+mmBtn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+mmBtn:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+local icon = mmBtn:CreateTexture(nil, "BACKGROUND")
+icon:SetTexture("Interface\\Icons\\INV_Letter_15") 
+icon:SetWidth(20); icon:SetHeight(20); icon:SetPoint("CENTER", 0, 0)
+local border = mmBtn:CreateTexture(nil, "OVERLAY")
+border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+border:SetWidth(52); border:SetHeight(52); border:SetPoint("TOPLEFT", 0, 0)
+
+local function UpdateMinimapPosition()
+    local angle = math.rad(BankRouterDB.minimapPos or 45)
+    local x, y = math.cos(angle), math.sin(angle)
+    mmBtn:SetPoint("CENTER", Minimap, "CENTER", x * 80, y * 80)
+end
+mmBtn:SetMovable(true); mmBtn:RegisterForDrag("LeftButton")
+mmBtn:SetScript("OnDragStart", function() this:LockHighlight(); this.isDragging = true end)
+mmBtn:SetScript("OnDragStop", function() this:UnlockHighlight(); this.isDragging = false end)
+mmBtn:SetScript("OnUpdate", function()
+    if this.isDragging then
+        local mx, my = Minimap:GetCenter()
+        local px, py = GetCursorPosition()
+        local scale = UIParent:GetScale()
+        px, py = px / scale, py / scale
+        local angle = math.deg(math.atan2(py - my, px - mx))
+        BankRouterDB.minimapPos = angle
+        UpdateMinimapPosition()
+    end
+end)
+mmBtn:SetScript("OnClick", function() 
+    BankRouter_InitDB(); CreateConfigFrame()
+    if configFrame:IsVisible() then configFrame:Hide() else configFrame:Show() end
+end)
+mmBtn:SetScript("OnEnter", function()
+    GameTooltip:SetOwner(this, "ANCHOR_LEFT"); GameTooltip:AddLine("BankRouter")
+    GameTooltip:AddLine("Click to configure.", 1,1,1); GameTooltip:Show()
+end)
+mmBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+-- =============================================================
+-- MAIN LOOP & EVENTS
+-- =============================================================
+eventFrame:RegisterEvent("ADDON_LOADED")
+eventFrame:RegisterEvent("MAIL_SEND_SUCCESS")
+eventFrame:RegisterEvent("UI_ERROR_MESSAGE")
+eventFrame:RegisterEvent("MAIL_SHOW")
+
+eventFrame:SetScript("OnEvent", function()
+    if event == "ADDON_LOADED" and arg1 == "BankRouter" then
+        BankRouter_InitDB(); UpdateMinimapPosition()
+    end
+    if event == "MAIL_SHOW" then
+        if BankRouterBtn then BankRouterBtn:Show() end
+    end
+    
+    if not processing then return end
+
+    if event == "MAIL_SEND_SUCCESS" then
+        pendingSend = true
+    elseif event == "UI_ERROR_MESSAGE" then
+        if arg1 == ERR_MAIL_TARGET_NOT_FOUND or arg1 == ERR_MAIL_MAILBOX_FULL then
+            processing = false
+            Print("Error: " .. arg1 .. ". Stopping.")
+        end
+    end
+end)
+
+eventFrame:SetScript("OnUpdate", function()
+    -- If we have a pending signal, execute logic
+    if processing and pendingSend then
+        ProcessLogic()
+    end
+end)
+
+-- BUTTON IN MAILBOX
+local btn = CreateFrame("Button", "BankRouterBtn", MailFrame, "UIPanelButtonTemplate")
+btn:SetWidth(120); btn:SetHeight(25)
+btn:SetPoint("TOPRIGHT", MailFrame, "TOPRIGHT", -50, -40)
+btn:SetText("Auto Route")
+btn:SetScript("OnClick", function()
+    if processing then processing = false; Print("Stopped.") else ScanBagsAndQueue() end
+end)
+
+local original_MailFrameTab_OnClick = MailFrameTab_OnClick
+function MailFrameTab_OnClick(tab)
+    original_MailFrameTab_OnClick(tab)
+    if not tab then tab = this:GetID() end
+    if tab == 1 then BankRouterBtn:Show() else BankRouterBtn:Hide() end
+end
