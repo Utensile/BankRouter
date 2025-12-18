@@ -21,7 +21,7 @@ local function Print(msg)
 end
 
 local function Debug(msg)
-    DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[DEBUG]|r " .. msg)
+    DEFAULT_CHAT_FRAME:AddMessage("|cffff0000[DEBUGV2]|r " .. msg)
 end
 
 -- DATABASE INIT
