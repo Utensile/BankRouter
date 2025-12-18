@@ -1,7 +1,7 @@
 ## Interface: 11200
 ## Title: BankRouter
 ## Notes: Automatically routes items to specific bank alts.
-## Version: 1.0.0
-## Author: Utensile
+## Version: 1.1.0
+## SavedVariables: BankRouterDB
 
 BankRouter.lua
