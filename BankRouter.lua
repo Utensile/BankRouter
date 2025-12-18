@@ -1,7 +1,7 @@
 -- =============================================================
 -- BANKROUTER
 -- Automated Item Mailing for Turtle WoW (Vanilla 1.12.1)
--- Logic: Event-driven (Fastest possible safe speed)
+-- Logic: Event-driven + UI Visibility Fix
 -- =============================================================
 
 -- CONFIGURATION
@@ -26,6 +26,15 @@ local function Print(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cff00ccff[BankRouter]|r " .. msg)
 end
 
+-- UI BUTTON CREATION
+-- (We create it early so we can reference it in functions)
+-- -------------------------------------------------------------
+local btn = CreateFrame("Button", "BankRouterBtn", MailFrame, "UIPanelButtonTemplate")
+btn:SetWidth(120)
+btn:SetHeight(25)
+btn:SetPoint("TOPRIGHT", MailFrame, "TOPRIGHT", -50, -40)
+btn:SetText("Auto Route")
+
 -- CORE FUNCTIONS
 -- -------------------------------------------------------------
 
@@ -48,7 +57,7 @@ local function ProcessNextItem()
         SendMailSubjectEditBox:SetText("")
         SendMailBodyEditBox:SetText("") -- Clear body text
         
-        -- Switch to Send tab
+        -- Switch to Send tab (This will trigger our hook and hide the button)
         MailFrameTab2:Click()
         
         -- Pickup and attach
@@ -56,21 +65,22 @@ local function ProcessNextItem()
         ClickSendMailItemButton()
         
         -- Send with NO body text
-        -- Args: Recipient, Subject, Body
         SendMail(work.recipient, work.name, "") 
         
         Print("Sent " .. work.name .. " to " .. work.recipient)
         
-        -- We remain in 'processing' state, but wait for the event to trigger the next one
     else
         -- Queue is empty
         processing = false
         pendingSend = false
         Print("All items sent!")
+        -- Optional: Switch back to Inbox when done? 
+        -- Uncomment the next line if you want it to return to Inbox automatically
+        -- MailFrameTab1:Click() 
     end
 end
 
--- 2. The Scanner (Starts the loop)
+-- 2. The Scanner
 local function ScanBagsAndQueue()
     mailQueue = {} 
     
@@ -95,7 +105,7 @@ local function ScanBagsAndQueue()
     if count > 0 then
         Print("Found " .. count .. " items. Sending first item...")
         processing = true
-        ProcessNextItem() -- Send the first one immediately to start the chain
+        ProcessNextItem() 
     else
         Print("No configured items found.")
     end
@@ -105,27 +115,32 @@ end
 -- -------------------------------------------------------------
 eventFrame:RegisterEvent("MAIL_SEND_SUCCESS")
 eventFrame:RegisterEvent("UI_ERROR_MESSAGE")
+eventFrame:RegisterEvent("MAIL_SHOW") -- Listen for mailbox opening
 
 eventFrame:SetScript("OnEvent", function()
+    -- 1. Reset Visibility on Open
+    if event == "MAIL_SHOW" then
+        if BankRouterBtn then BankRouterBtn:Show() end
+        return
+    end
+
+    -- 2. Automation Logic
     if not processing then return end
 
     if event == "MAIL_SEND_SUCCESS" then
-        -- Success! Flag the OnUpdate loop to send the next one.
         pendingSend = true
         
     elseif event == "UI_ERROR_MESSAGE" then
-        -- If we get an error (bag full, target not found), stop immediately.
         if arg1 == ERR_MAIL_TARGET_NOT_FOUND or arg1 == ERR_MAIL_MAILBOX_FULL then
             processing = false
             pendingSend = false
-            Print("Error encountered: " .. arg1 .. ". Stopping.")
+            Print("Error: " .. arg1 .. ". Stopping.")
         end
     end
 end)
 
 -- LOGIC LOOP
 -- -------------------------------------------------------------
--- This mimics TurtleMail's 'on_update' check
 eventFrame:SetScript("OnUpdate", function()
     if processing and pendingSend then
         pendingSend = false
@@ -133,14 +148,8 @@ eventFrame:SetScript("OnUpdate", function()
     end
 end)
 
--- UI BUTTON
+-- BUTTON CLICK HANDLER
 -- -------------------------------------------------------------
-local btn = CreateFrame("Button", "BankRouterBtn", MailFrame, "UIPanelButtonTemplate")
-btn:SetWidth(120)
-btn:SetHeight(25)
-btn:SetPoint("TOPRIGHT", MailFrame, "TOPRIGHT", -50, -40)
-btn:SetText("Auto Route")
-
 btn:SetScript("OnClick", function()
     if processing then
         processing = false
@@ -151,4 +160,25 @@ btn:SetScript("OnClick", function()
     end
 end)
 
-Print("BankRouter (Silent Mode) Loaded.")
+-- HOOKS (VISIBILITY FIX)
+-- -------------------------------------------------------------
+-- We overwrite the Tab Click function to toggle our button
+local original_MailFrameTab_OnClick = MailFrameTab_OnClick
+
+function MailFrameTab_OnClick(tab)
+    -- Run the original blizzard code first
+    original_MailFrameTab_OnClick(tab)
+
+    -- Now apply our logic
+    if not tab then tab = this:GetID() end -- Handle case where tab isn't passed directly
+    
+    if tab == 1 then
+        -- Inbox Tab: Show Button
+        BankRouterBtn:Show()
+    else
+        -- Send Tab: Hide Button
+        BankRouterBtn:Hide()
+    end
+end
+
+Print("BankRouter (Main Tab Only) Loaded.")
