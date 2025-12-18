@@ -8,11 +8,117 @@ local function Print(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cff00ccff[BankRouter]|r " .. msg)
 end
 
+local function Debug(msg)
+    if(BankRouterDB.debug) then
+        DEFAULT_CHAT_FRAME:AddMessage("|cffff5555[Debug]|r " .. msg)
+    end
+end
+
+-- Simple non-blocking delay function
+local function wait(seconds, callback)
+    local timerFrame = CreateFrame("Frame")
+    timerFrame.timeElapsed = 0
+    timerFrame:SetScript("OnUpdate", function()
+        this.timeElapsed = this.timeElapsed + arg1
+        if this.timeElapsed >= seconds then
+            this:SetScript("OnUpdate", nil) -- Stop the timer
+            if callback then callback() end  -- Run the code
+        end
+    end)
+end
+
 -- Helper: Get Item Name from Link
 local function GetItemNameFromLink(link)
     if not link then return nil end
     local _, _, name = string.find(link, "%[(.+)%]")
     return name
+end
+
+-- =============================================================
+--  COLOR HELPERS (Prat "playernames" Support)
+-- =============================================================
+local function RGBToHex(r, g, b)
+    r = r or 1.0; g = g or 1.0; b = b or 1.0;
+    return string.format("|cff%02x%02x%02x", r * 255, g * 255, b * 255)
+end
+
+local function GetRecipientColor(name)
+    local hex = "|cff888888" -- Default: Gray
+    local class = nil
+
+    -- 1. Try to get class from Prat 'playernames' module
+    if Prat and Prat.GetModule then
+        -- The module is registered as "playernames" (lowercase) in your file
+        local PN = Prat:GetModule("playernames") 
+        if PN and PN.Classes then
+            -- The file shows data is stored in PN.Classes[Name]
+            class = PN.Classes[name]
+        end
+    end
+
+    -- 2. Fallback: Try standard API if the player is currently targeted
+    if not class and UnitName("target") == name then
+        _, class = UnitClass("target")
+    end
+
+    -- 3. Convert Class to Color
+    if class then
+        -- Prat might store "Mage" or "MAGE", RAID_CLASS_COLORS requires "MAGE"
+        local upperClass = string.upper(class)
+        
+        if RAID_CLASS_COLORS and RAID_CLASS_COLORS[upperClass] then
+            local c = RAID_CLASS_COLORS[upperClass]
+            hex = RGBToHex(c.r, c.g, c.b)
+        end
+    end
+    
+    return hex
+end
+
+-- =============================================================
+--  HOOKS (Robust method for Bagshui/OneBag/Stock UI)
+-- =============================================================
+local function InitHooks()
+    Debug("INIT HOOKS STARTED")
+
+    -- 1. Save the original function so we don't break the game when the window is closed
+    if not BR_Orig_ContainerFrameItemButton_OnClick then
+        BR_Orig_ContainerFrameItemButton_OnClick = ContainerFrameItemButton_OnClick
+    end
+
+    -- 2. Define the new function (Standard Left Click Hook)
+    ContainerFrameItemButton_OnClick = function(button, ignoreShift)
+        Debug("CLICK DETECTED - ".. button)
+        -- Check if BankRouter Config Frame is currently open and it is a Left Click
+        if BankRouterFrame and BankRouterFrame:IsVisible() and IsShiftKeyDown() and button == "LeftButton" then
+            Debug("ITS A LEFT CLICK!!!!")
+            -- Get the item info from the button that was clicked
+            local bag = this:GetParent():GetID()
+            local slot = this:GetID()
+            local link = GetContainerItemLink(bag, slot)
+            
+            Debug("bag: ".. bag.." slot: ".. slot.. "link: "..link)
+            if link then
+                local name = GetItemNameFromLink(link)
+                if name then
+                    -- Update the Input Field
+                    BankRouterItemInput:SetText(name)
+                    -- Move focus to Recipient field for faster entry
+                    BankRouterRecInput:SetFocus()
+                    
+                    Print("Auto-filled: " .. name)
+                    
+                    -- CRITICAL: Return here to BLOCK the item from being picked up
+                    return 
+                end
+            end
+        end
+
+        -- 3. If the window wasn't open (or it wasn't a left click), run the original code
+        if BR_Orig_ContainerFrameItemButton_OnClick then
+            BR_Orig_ContainerFrameItemButton_OnClick(button, ignoreShift)
+        end
+    end
 end
 
 -- =============================================================
@@ -77,27 +183,44 @@ end
 --  CONFIGURATION GUI
 -- =============================================================
 local function UpdateRouteList(scrollChild)
+    -- 1. Clear existing children
     local kids = {scrollChild:GetChildren()}
     for _, child in ipairs(kids) do
         child:Hide()
         child:SetParent(nil)
     end
 
+    -- 2. Convert database to a sortable list
+    local sortedRoutes = {}
+    for item, recipient in pairs(BankRouterDB.routes) do
+        table.insert(sortedRoutes, {item = item, recipient = recipient})
+    end
+
+    -- 3. Sort the list: Recipient First, Item Second
+    table.sort(sortedRoutes, function(a, b)
+        if a.recipient == b.recipient then
+            return a.item < b.item
+        else
+            return a.recipient < b.recipient
+        end
+    end)
+
+    -- 4. Draw the sorted list
     local yOffset = 0
-    for itemName, recipientName in pairs(BankRouterDB.routes) do
+    for _, route in ipairs(sortedRoutes) do
+        local itemName = route.item
+        local recipientName = route.recipient
+        
         local row = CreateFrame("Frame", nil, scrollChild)
-        row:SetWidth(260)
+        row:SetWidth(240)
         row:SetHeight(20)
         row:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 5, yOffset)
 
-        local text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        text:SetPoint("LEFT", row, "LEFT", 0, 0)
-        text:SetText("|cffffd100" .. itemName .. "|r  ->  " .. recipientName)
-
+        -- DELETE BUTTON
         local delBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
         delBtn:SetWidth(20)
         delBtn:SetHeight(20)
-        delBtn:SetPoint("RIGHT", row, "RIGHT", -5, 0)
+        delBtn:SetPoint("RIGHT", row, "RIGHT", 0, 0)
         delBtn:SetText("X")
         delBtn.itemName = itemName 
         
@@ -109,14 +232,39 @@ local function UpdateRouteList(scrollChild)
                 Print("Removed route for: " .. itemToDelete)
             end
         end)
+
+        -- ITEM NAME (Left)
+        local itemText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        itemText:SetPoint("LEFT", row, "LEFT", 0, 0)
+        itemText:SetWidth(130)
+        itemText:SetJustifyH("LEFT")
+        itemText:SetText("|cffffd100" .. itemName .. "|r")
+
+        -- RECIPIENT NAME (Right) - COLORED
+        local recText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        recText:SetPoint("RIGHT", delBtn, "LEFT", -5, 0)
+        recText:SetWidth(90)
+        recText:SetJustifyH("RIGHT")
+        
+        -- Get Color using the fixed helper
+        local colorHex = GetRecipientColor(recipientName)
+        recText:SetText(colorHex .. recipientName .. "|r")
+
+        -- Arrow Separator
+        local arrow = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        arrow:SetPoint("CENTER", row, "CENTER", 0, 0)
+        arrow:SetText("|cff555555->|r")
+        arrow:SetAlpha(0.5)
+
         yOffset = yOffset - 22
     end
 end
 
 local function CreateConfigFrame()
+    -- 1. Main Frame
     local f = CreateFrame("Frame", "BankRouterFrame", UIParent)
-    f:SetWidth(300)
-    f:SetHeight(400)
+    f:SetWidth(340) -- Slightly wider to prevent text cramping
+    f:SetHeight(450)
     f:SetPoint("CENTER", UIParent, "CENTER")
     f:SetBackdrop({
         bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
@@ -134,38 +282,69 @@ local function CreateConfigFrame()
     local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     title:SetPoint("TOP", f, "TOP", 0, -15)
     title:SetText("BankRouter Config")
+    
+    local subtitle = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    subtitle:SetPoint("TOP", title, "BOTTOM", 0, -5)
+    subtitle:SetText("(Shift+Click an item to auto-fill)")
 
     local closeBtn = CreateFrame("Button", nil, f, "UIPanelCloseButton")
     closeBtn:SetPoint("TOPRIGHT", f, "TOPRIGHT", -5, -5)
 
-    local itemInput = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
-    itemInput:SetWidth(120)
+    -- 2. Input Fields
+    -- We give them Global Names (BankRouterItemInput) so we can find them later in the hook
+    local itemInput = CreateFrame("EditBox", "BankRouterItemInput", f, "InputBoxTemplate")
+    itemInput:SetWidth(140)
     itemInput:SetHeight(20)
-    itemInput:SetPoint("TOPLEFT", f, "TOPLEFT", 20, -50)
+    -- Moved down to -60 to give the labels plenty of room below the title
+    itemInput:SetPoint("TOPLEFT", f, "TOPLEFT", 25, -60)
     itemInput:SetAutoFocus(false)
     
     local itemLabel = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    itemLabel:SetPoint("BOTTOMLEFT", itemInput, "TOPLEFT", -5, 0)
-    itemLabel:SetText("Item Name (Case Sensitive)")
+    -- Anchored 5 pixels ABOVE the box (TOPLEFT to TOPLEFT with y=15 offset)
+    itemLabel:SetPoint("BOTTOMLEFT", itemInput, "TOPLEFT", -5, 4)
+    itemLabel:SetText("Item Name")
 
-    local recInput = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
-    recInput:SetWidth(100)
+    local recInput = CreateFrame("EditBox", "BankRouterRecInput", f, "InputBoxTemplate")
+    recInput:SetWidth(120)
     recInput:SetHeight(20)
-    recInput:SetPoint("LEFT", itemInput, "RIGHT", 10, 0)
+    -- Anchored to the right of the Item Input with 20px padding
+    recInput:SetPoint("LEFT", itemInput, "RIGHT", 20, 0)
     recInput:SetAutoFocus(false)
 
     local recLabel = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    recLabel:SetPoint("BOTTOMLEFT", recInput, "TOPLEFT", -5, 0)
+    -- Anchored 5 pixels ABOVE the box
+    recLabel:SetPoint("BOTTOMLEFT", recInput, "TOPLEFT", -5, 4)
     recLabel:SetText("Recipient Name")
 
+    -- 3. Checkboxes (Auto Send / Debug)
+    local autoSendCB = CreateFrame("CheckButton", "BankRouterAutoSendCheck", f, "UICheckButtonTemplate")
+    -- Positioned well below the input boxes
+    autoSendCB:SetPoint("TOPLEFT", itemInput, "BOTTOMLEFT", -5, -15)
+    _G[autoSendCB:GetName().."Text"]:SetText("Auto Send")
+    autoSendCB:SetChecked(BankRouterDB.autoSend)
+    autoSendCB:SetScript("OnClick", function()
+        BankRouterDB.autoSend = this:GetChecked() and true or false
+    end)
+
+    local debugCB = CreateFrame("CheckButton", "BankRouterDebugCheck", f, "UICheckButtonTemplate")
+    debugCB:SetPoint("LEFT", autoSendCB, "RIGHT", 100, 0)
+    _G[debugCB:GetName().."Text"]:SetText("Debug Mode")
+    debugCB:SetChecked(BankRouterDB.debug)
+    debugCB:SetScript("OnClick", function()
+        BankRouterDB.debug = this:GetChecked() and true or false
+    end)
+
+    -- 4. Add/Update Button
     local addBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
     addBtn:SetWidth(250)
     addBtn:SetHeight(25)
-    addBtn:SetPoint("TOP", f, "TOP", 0, -85)
+    -- Anchored below the checkboxes
+    addBtn:SetPoint("TOP", f, "TOP", 0, -135)
     addBtn:SetText("Add / Update Route")
 
+    -- 5. Scroll List
     local scrollFrame = CreateFrame("ScrollFrame", "BankRouterConfigScrollFrame", f, "UIPanelScrollFrameTemplate")
-    scrollFrame:SetPoint("TOPLEFT", f, "TOPLEFT", 15, -120)
+    scrollFrame:SetPoint("TOPLEFT", f, "TOPLEFT", 15, -170)
     scrollFrame:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -35, 15)
     
     local scrollChild = CreateFrame("Frame", nil, scrollFrame)
@@ -179,7 +358,7 @@ local function CreateConfigFrame()
         if item and item ~= "" and to and to ~= "" then
             BankRouterDB.routes[item] = to
             itemInput:SetText("")
-            recInput:SetText("")
+            --recInput:SetText("")
             itemInput:ClearFocus()
             recInput:ClearFocus()
             UpdateRouteList(scrollChild)
@@ -198,10 +377,9 @@ end
 
 local function PrepareNextBatch()
     -- 0. SAFETY CHECK: IS MAIL ALREADY FULL?
-    -- If slot 1 has an item, we are still waiting for the user to click Send.
-    local currentName = SendMailNameEditBox:GetText()
-    if currentName and currentName ~= "" then
-        Print("Mailbox is busy (Name field is not empty). Please Send or Clear.  ->" .. currenName)
+    local currentSubject = SendMailSubjectEditBox:GetText()
+    if currentSubject and currentSubject ~= "" then
+        Print("Mailbox is busy (Name field is not empty). Please Send or Clear.  ->" .. currentSubject)
         return
     end
 
@@ -220,14 +398,14 @@ local function PrepareNextBatch()
                 local link = GetContainerItemLink(bag, slot)
                 local name = GetItemNameFromLink(link)
                 local routeRecipient = BankRouterDB.routes[name]
-                print("Item: " .. name .. "Recipient: " .. (routeRecipient or "nil"))
+                Debug("Item: " .. name .. "Recipient: " .. (routeRecipient or "nil"))
                 -- Is there a route? And are we NOT mailing ourselves?
                 if routeRecipient and routeRecipient ~= myName then
                     
                     -- Logic:
                     -- If we haven't picked a target yet, pick this one.
                     -- If we HAVE picked a target, only add items if they match that target.
-                    print("Valid Recipeint detected: ".. routeRecipient)
+                    Debug("Valid Recipeint detected: ".. routeRecipient)
                     if not targetRecipient then
                         targetRecipient = routeRecipient
                         targetSubject = name -- Use first item name as subject
@@ -239,7 +417,7 @@ local function PrepareNextBatch()
                         end
                     end
 
-                    print("targetRecipient: " .. targetRecipient)
+                    Debug("targetRecipient: " .. targetRecipient)
                 end
             end
         end
@@ -251,13 +429,9 @@ local function PrepareNextBatch()
     end
 
     -- 2. Switch to Send Tab
-    MailFrameTab2:Click() 
+    MailFrameTab2:Click()
     
     -- 3. Force Update the Name Field
-    -- We clear the text, clear the focus (remove cursor), then set the new text.
-    -- This prevents the UI from getting stuck on the previous name.
-    SendMailNameEditBox:SetText("")
-    SendMailNameEditBox:ClearFocus() 
     SendMailNameEditBox:SetText(targetRecipient)
     
     -- 4. Set Subject
@@ -275,6 +449,14 @@ local function PrepareNextBatch()
     end
     
     Print("Prepared batch for " .. targetRecipient .. " (" .. count .. " items). Press Send when ready.")
+    if BankRouterDB.autoSend and TurtleMail and TurtleMail.send_mail_button_onclick then
+        wait(0.2, function ()
+            TurtleMail.send_mail_button_onclick()
+            wait(1, function ()
+                PrepareNextBatch()
+            end)
+        end)
+    end
 end
 
 -- =============================================================
@@ -286,7 +468,7 @@ local function CreateMailboxButton()
     btn:SetHeight(25)
     
     -- Position: Below the "Send" button
-    btn:SetPoint("TOP", "SendMailMailButton", "BOTTOM", 0, -5)
+    btn:SetPoint("TOP", "SendMailMailButton", "BOTTOMRIGHT", 20, -5)
     
     btn:SetText("Prepare Batch")
     
@@ -294,6 +476,7 @@ local function CreateMailboxButton()
         PrepareNextBatch()
     end)
 end
+
 
 -- =============================================================
 --  EVENT HANDLERS
@@ -303,10 +486,13 @@ BR:SetScript("OnEvent", function()
         if not BankRouterDB then BankRouterDB = {} end
         if not BankRouterDB.routes then BankRouterDB.routes = {} end
         if not BankRouterDB.minimapPos then BankRouterDB.minimapPos = 45 end
+        if not BankRouterDB.autoSend then BankRouterDB.autoSend = true end
+        if not BankRouterDB.debug then BankRouterDB.debug = false end
         
         CreateConfigFrame()
         CreateMinimapButton()
         CreateMailboxButton()
+        InitHooks() -- Activate the Shift+Click hook
         Print("Loaded.")
     end
 end)
