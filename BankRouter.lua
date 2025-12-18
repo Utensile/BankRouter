@@ -174,7 +174,7 @@ local function GetItemDetails(name)
     if not id then return nil, nil, nil end
 
     -- 3. Get Info
-    local _, _, rarity, level, minlevel, type, realSubType, stackCount, equipLoc, texture, sellPrice = GetItemInfo(id)
+    local _, _, rarity, level, type, realSubType, stackSize, equipLoc, texture = GetItemInfo(id)
     local soulbound = IsItemSoulbound(name)
     -- 4. === HEURISTIC REFINEMENT ===
     -- Only run heuristics if it's a generic "Trade Good" to avoid misclassifying Armor/Weapons
@@ -186,9 +186,7 @@ local function GetItemDetails(name)
         end
     end
     -- ============================
-    
-    return link, type, subType, soulbound, id, rarity, level, minlevel, stackCount, equipLoc, texture, sellPrice, realSubType
-end
+    return link, type, subType, soulbound, id, rarity, level, realSubType, stackSize, equipLoc, texture end
 
 local function DebugItemInfo(name)
     if not name then 
@@ -196,27 +194,25 @@ local function DebugItemInfo(name)
         return 
     end
 
-    local link, type, subType, soulbound, id, rarity, level, minlevel, stackCount, equipLoc, texture, sellPrice, realSubtype = GetItemDetails(name)
-
+    local link, type, subType, soulbound, id, rarity, level, realSubType, stackSize, equipLoc, texture = GetItemDetails(name)
     -- 5. Print EVERYTHING
+    
     Debug("-------------------------------------------")
     Debug("FULL REPORT FOR: " .. (link or "nil"))
     Debug("ID: " .. (id or "nil"))
     Debug("Name: " .. (name or "nil"))
     Debug("-------------------------------------------")
-    Debug("RAW VALUES:")
+    Debug("ITEM DETAILS:")
     Debug("• Rarity: " .. (rarity or "nil"))
     Debug("• Level: " .. (level or "nil"))
-    Debug("• Minimum Level: " .. (minlevel or "nil"))
-    Debug("• Stack Size: " .. (stackCount or "nil"))
-    Debug("• Equip Location: " .. (equipLoc or "nil"))
+    Debug("• Stack Size: " .. (stackSize or "nil"))
+    Debug("• Equipment Location: " .. (equipLoc or "nil"))
     Debug("• Texture: " .. (texture or "nil"))
-    Debug("• Sell Price: " .. (sellPrice or "nil"))
     Debug("• Soulbound: " .. (tostring(soulbound) or "nil"))
     Debug("-------------------------------------------")
     Debug("CATEGORIZATION:")
     Debug("   Category: " .. "|cff00ff00" .. (type or "nil") .. "|r")
-    Debug("   SubCategory: " .. "|cff66ccff" .. subType .."["..realSubtype.."]".. "|r")
+    Debug("   SubCategory: " .. "|cff66ccff" .. (subType or "nil") .."["..(realSubType or "nil").."]".. "|r")
     Debug("-------------------------------------------")
 end
 
