@@ -280,29 +280,36 @@ local function InitHooks()
     -- 2. Define the new function (Standard Left Click Hook)
     ContainerFrameItemButton_OnClick = function(button, ignoreShift)
         Debug("CLICK DETECTED - ".. button)
-        -- Check if BankRouter Config Frame is currently open and it is a Left Click
-        if BankRouterFrame and BankRouterFrame:IsVisible() and IsShiftKeyDown() and button == "LeftButton" then
-            -- Get the item info from the button that was clicked
-            local bag = this:GetParent():GetID()
-            local slot = this:GetID()
-            local link = GetContainerItemLink(bag, slot)
-            if link then
+        if(IsShiftKeyDown() and button == "LeftButton") then
+            if(BankRouterDB.debug) then
+                local bag = this:GetParent():GetID()
+                local slot = this:GetID()
+                local link = GetContainerItemLink(bag, slot)
                 local name = GetItemNameFromLink(link)
                 if name then
                     DebugItemInfo(name)
-                    -- Update the Input Field
-                    BankRouterItemInput:SetText(name)
-                    -- Move focus to Recipient field for faster entry
-                    BankRouterRecInput:SetFocus()
-                    
-                    Debug("Auto-filled: " .. name)
-                    
-                    -- CRITICAL: Return here to BLOCK the item from being picked up
-                    return 
+                end
+            end
+            if BankRouterFrame and BankRouterFrame:IsVisible() then
+                -- Get the item info from the button that was clicked
+                local bag = this:GetParent():GetID()
+                local slot = this:GetID()
+                local link = GetContainerItemLink(bag, slot)
+                if link then
+                    local name = GetItemNameFromLink(link)
+                    if name then
+                        -- Update the Input Field
+                        BankRouterItemInput:SetText(name)
+                        -- Move focus to Recipient field for faster entry
+                        BankRouterRecInput:SetFocus()
+                        Debug("Auto-filled: " .. name)
+                        
+                        -- CRITICAL: Return here to BLOCK the item from being picked up
+                        return 
+                    end
                 end
             end
         end
-
         -- 3. If the window wasn't open (or it wasn't a left click), run the original code
         if BR_Orig_ContainerFrameItemButton_OnClick then
             BR_Orig_ContainerFrameItemButton_OnClick(button, ignoreShift)
@@ -446,26 +453,26 @@ local function PrepareNextBatch()
                 
                 -- === PRIORITY LOOKUP ===
                 local recipient = nil
-                
-                -- 1. Check Specific Item Rule (Highest Priority)
-                if BankRouterDB.routes[name] then
-                    recipient = BankRouterDB.routes[name]
-                    Debug("Match Item: " .. name .. " to " .. recipient)
-                else
-                    local _, type, subType = GetItemDetails(name)
-                    
-                    -- 2. Check Subcategory Rule (Medium Priority)
-                    if subType and BankRouterDB.routes["s:" .. subType] then
-                        recipient = BankRouterDB.routes["s:" .. subType]
-                        Debug("Match SubCat: " .. name .." - ".. subType .. " to " .. recipient)
+                if(not IsItemSoulbound(name)) then
+                    -- 1. Check Specific Item Rule (Highest Priority)
+                    if BankRouterDB.routes[name] then
+                        recipient = BankRouterDB.routes[name]
+                        Debug("Match Item: " .. name .. " to " .. recipient)
+                    else
+                        local _, type, subType = GetItemDetails(name)
                         
-                    -- 3. Check Category Rule (Lowest Priority)
-                    elseif type and BankRouterDB.routes["c:" .. type] then
-                        recipient = BankRouterDB.routes["c:" .. type]
-                        Debug("Match Cat: " .. name .." - ".. type .. " to " .. recipient)
+                        -- 2. Check Subcategory Rule (Medium Priority)
+                        if subType and BankRouterDB.routes["s:" .. subType] then
+                            recipient = BankRouterDB.routes["s:" .. subType]
+                            Debug("Match SubCat: " .. name .." - ".. subType .. " to " .. recipient)
+                            
+                        -- 3. Check Category Rule (Lowest Priority)
+                        elseif type and BankRouterDB.routes["c:" .. type] then
+                            recipient = BankRouterDB.routes["c:" .. type]
+                            Debug("Match Cat: " .. name .." - ".. type .. " to " .. recipient)
+                        end
                     end
                 end
-
                 -- === BATCHING LOGIC ===
                 if recipient and recipient ~= myName then
                     -- If we haven't picked a target yet, lock it in
