@@ -1,14 +1,17 @@
 -- =============================================================
--- BANKROUTER v1.6 (DEBUG & STATE MACHINE)
+-- BANKROUTER v1.7 (FIXED TIMING)
+-- Fix: Added explicit 0.3s delay after tab switch to ensure 
+-- the mail slot is ready to receive items.
 -- =============================================================
 
 -- CONFIGURATION & STATE
 -- -------------------------------------------------------------
 local mailQueue = {}
 local processing = false
-local currentState = "IDLE" -- IDLE, PREPARING, SENDING, WAITING
+local currentState = "IDLE" 
 local currentWork = nil
 local eventFrame = CreateFrame("Frame")
+local delayTimer = 0 -- Timer for our pause state
 local configFrame, scrollChild
 
 -- UTILITIES
@@ -40,14 +43,23 @@ end
 -- CORE LOGIC (STATE MACHINE)
 -- =============================================================
 
--- This function runs every single frame when 'processing' is true
-local function RunStateMachine()
+local function RunStateMachine(elapsed)
     
     -- SAFETY CHECK
     if not MailFrame:IsVisible() then
         processing = false
         currentState = "IDLE"
         Print("Mailbox closed. Stopping.")
+        return
+    end
+
+    -- STATE: WAIT_DELAY
+    -- This acts as a 'Sleep' function to let the UI catch up
+    if currentState == "WAIT_DELAY" then
+        delayTimer = delayTimer - elapsed
+        if delayTimer <= 0 then
+            currentState = "ATTACH_ITEM" -- Resume work
+        end
         return
     end
 
@@ -61,77 +73,71 @@ local function RunStateMachine()
             return
         end
         
-        Debug("Processing: " .. currentWork.name .. " (Bag " .. currentWork.bag .. ", Slot " .. currentWork.slot .. ")")
+        Debug("Processing: " .. currentWork.name)
         currentState = "PREPARE_UI"
         return
     end
 
-    -- STATE 2: PREPARE UI (Switch Tab & Clear)
+    -- STATE 2: PREPARE UI
     if currentState == "PREPARE_UI" then
+        -- 1. Switch Tab if needed
         if not SendMailFrame:IsVisible() then
             Debug("Switching to Send Mail Tab...")
             MailFrameTab2:Click()
         end
         
-        -- Clear fields
+        -- 2. Clean up UI
         SendMailNameEditBox:SetText("")
         SendMailSubjectEditBox:SetText("")
         SendMailBodyEditBox:SetText("")
         
-        -- Scrub cursor/slot clean
+        -- 3. Scrub Cursor/Slot
         ClearCursor()
         ClickSendMailItemButton()
         ClearCursor()
         
-        -- Wait one frame for UI to update
-        currentState = "ATTACH_ITEM"
+        -- 4. PAUSE! 
+        -- We wait 0.3 seconds here to let the slot initialize.
+        delayTimer = 0.3
+        currentState = "WAIT_DELAY"
         return
     end
 
     -- STATE 3: ATTACH ITEM
     if currentState == "ATTACH_ITEM" then
-        -- Try to pick it up
+        -- Pickup
         PickupContainerItem(currentWork.bag, currentWork.slot)
         
-        -- Check if cursor actually has it
+        -- Verify pickup
         if not CursorHasItem() then
-            Debug("FAILED: Cursor did not pick up item. Retrying...")
-            -- If this happens, we just stay in this state to try again next frame
-            -- or we could abort to prevent infinite loops. 
-            -- For now, let's abort this item.
-            Debug("Skipping " .. currentWork.name .. " due to pickup failure.")
-            currentState = "NEXT_ITEM"
+            Debug("FAILED: Cursor empty. Retrying...")
+            ClearCursor()
+            currentState = "PREPARE_UI" -- Reset UI and try again
             return
         end
         
-        -- Drop into slot
+        -- Drop
         ClickSendMailItemButton()
         
-        -- Verify it is attached
-        local attachedName = GetSendMailItem()
-        if attachedName then
-            Debug("Success! Attached: " .. attachedName)
+        -- Verify Attachment
+        if GetSendMailItem() then
+            Debug("Success! Attached.")
             currentState = "SEND_MAIL"
         else
-            Debug("FAILED: Item dropped but not attached to mail slot.")
-            ClearCursor() -- Clean up mess
-            currentState = "NEXT_ITEM" -- Skip it
+            Debug("FAILED: Item dropped but didn't stick.")
+            ClearCursor() 
+            currentState = "NEXT_ITEM" -- Skip this item to avoid infinite loop
         end
         return
     end
 
     -- STATE 4: SEND MAIL
     if currentState == "SEND_MAIL" then
-        Debug("Sending mail to " .. currentWork.recipient)
+        Debug("Sending to " .. currentWork.recipient)
         SendMail(currentWork.recipient, "", "")
         
-        -- Now we MUST wait for the server event
+        -- Wait for Server Event
         currentState = "WAITING_FOR_SERVER"
-    end
-    
-    -- STATE 5: WAITING (Handled by OnEvent)
-    if currentState == "WAITING_FOR_SERVER" then
-        -- Do nothing here. We wait for MAIL_SEND_SUCCESS or TIMEOUT.
     end
 end
 
@@ -187,7 +193,7 @@ eventFrame:SetScript("OnEvent", function()
     if not processing then return end
 
     if event == "MAIL_SEND_SUCCESS" then
-        Debug("Server confirmed: Mail Sent.")
+        Debug("Mail Sent!")
         currentState = "NEXT_ITEM"
         
     elseif event == "UI_ERROR_MESSAGE" then
@@ -196,7 +202,6 @@ eventFrame:SetScript("OnEvent", function()
             processing = false
             Print("Critical Error. Stopping.")
         else
-            -- Recoverable error? Try next item.
             currentState = "NEXT_ITEM"
         end
     end
@@ -204,17 +209,13 @@ end)
 
 eventFrame:SetScript("OnUpdate", function()
     if processing then
-        RunStateMachine()
+        RunStateMachine(arg1) -- arg1 is 'elapsed' time since last frame
     end
 end)
 
 -- =============================================================
--- UI SETUP (CONFIG & BUTTONS)
+-- UI SETUP
 -- =============================================================
-
--- [Copy of previous UI Config code assumed here. 
---  To save space, I am including the essential Button/Hook logic only. 
---  The Config window code is identical to v1.5]
 
 local function RefreshConfigList()
     local children = { scrollChild:GetChildren() }
@@ -257,6 +258,7 @@ mmBtn:SetFrameStrata("LOW"); mmBtn:SetWidth(32); mmBtn:SetHeight(32); mmBtn:SetP
 local icon = mmBtn:CreateTexture(nil, "BACKGROUND"); icon:SetTexture("Interface\\Icons\\INV_Letter_15"); icon:SetWidth(20); icon:SetHeight(20); icon:SetPoint("CENTER", 0, 0)
 local border = mmBtn:CreateTexture(nil, "OVERLAY"); border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder"); border:SetWidth(52); border:SetHeight(52); border:SetPoint("TOPLEFT", 0, 0)
 mmBtn:SetScript("OnClick", function() BankRouter_InitDB(); CreateConfigFrame(); if configFrame:IsVisible() then configFrame:Hide() else configFrame:Show() end end)
+-- mmBtn Movement code omitted for brevity but logic is standard
 
 local btn = CreateFrame("Button", "BankRouterBtn", MailFrame, "UIPanelButtonTemplate")
 btn:SetWidth(120); btn:SetHeight(25); btn:SetPoint("TOPRIGHT", MailFrame, "TOPRIGHT", -50, -40); btn:SetText("Auto Route")
