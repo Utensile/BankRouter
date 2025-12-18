@@ -220,7 +220,7 @@ local function PrepareNextBatch()
                 local link = GetContainerItemLink(bag, slot)
                 local name = GetItemNameFromLink(link)
                 local routeRecipient = BankRouterDB.routes[name]
-                print("Item: " .. name .. "Recipient: " .. routeRecipient)
+                print("Item: " .. name .. "Recipient: " .. (routeRecipient or "nil"))
                 -- Is there a route? And are we NOT mailing ourselves?
                 if routeRecipient and routeRecipient ~= myName then
                     
