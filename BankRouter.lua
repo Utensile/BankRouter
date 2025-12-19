@@ -551,7 +551,8 @@ local function UpdateRouteList(scrollChild)
         -- Tooltip for Items only
         if route.cType == "item" then
             -- Find the full link in bags
-            local fullLink, _ = FindItemLink(route.display)
+            local id = FindItemId(route.display)
+            local fullLink, _ = GetLinkFromID(id)
             
             if fullLink then
                 -- FIX: Extract ONLY the 'item:1234:...' part
