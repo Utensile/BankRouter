@@ -19,33 +19,87 @@ local validCats = {
     ["Projectile"] = 1,
     ["Quest"] = 1,
     ["Key"] = 1,
-    ["Miscellaneous"] = 1,
-    ["Recipe"] = 1,      -- Sometimes returned as the type itself
-    
-    -- Profession Types (Recipes often use these as the Main Type)
-    ["Alchemy"] = 1,
-    ["Blacksmithing"] = 1,
-    ["Cooking"] = 1,
-    ["Enchanting"] = 1,
-    ["Engineering"] = 1,
-    ["First Aid"] = 1,
-    ["Leatherworking"] = 1,
-    ["Mining"] = 1,
-    ["Tailoring"] = 1,
-    -- ["Jewelcrafting"] = 1, -- Only include if playing TBC/TurtleWoW custom
+    ["Recipe"] = 1,  
+    ["Miscellaneous"] = 1
 }
 
 local validSubs = {
+    -- Trade Goods (Custom Categories)
     ["Cloth"] = 1,
-    ["Stone"] = 1,
     ["Metal"] = 1,
-    ["Meat"] = 1,
+    ["Elemental"] = 1,
     ["Leather"] = 1,
     ["Herb"] = 1,
     ["Gem"] = 1,
-    ["Enchanting"] = 1,
+    ["Stone"] = 1,
+    ["Enchanting Material"] = 1,
+    ["Cooking Ingredient"] = 1,
+    ["Engineering Parts"] = 1,
+    ["Misc Trade Goods"] = 1,
+
+    -- Consumables (Custom Categories)
+    ["Fish"] = 1,
+    ["Food"] = 1,
+    ["Drink"] = 1,
     ["Potion"] = 1,
-    ["Recipe"] = 1,
+    ["Scroll"] = 1,
+    ["Bandage"] = 1,
+    ["Item Enhancement"] = 1,
+    ["Misc Consumable"] = 1,
+
+    -- Armor (Custom & Passthrough)
+    ["Cloth Armor"] = 1,
+    ["Leather Armor"] = 1,
+    ["Mail Armor"] = 1,
+    ["Plate Armor"] = 1,
+    ["Misc Armor"] = 1,
+    ["Shields"] = 1,
+    ["Idols"] = 1,
+    ["Librams"] = 1,
+    ["Totems"] = 1,
+
+    -- Recipes (concatenated)
+    ["Alchemy Recipe"] = 1,
+    ["Blacksmithing Recipe"] = 1,
+    ["Cooking Recipe"] = 1,
+    ["Enchanting Recipe"] = 1,
+    ["Engineering Recipe"] = 1,
+    ["First Aid Recipe"] = 1,
+    ["Leatherworking Recipe"] = 1,
+    ["Tailoring Recipe"] = 1,
+
+    -- Weapons (Passthrough)
+    ["Bows"] = 1,
+    ["Crossbows"] = 1,
+    ["Daggers"] = 1,
+    ["Guns"] = 1,
+    ["Fishing Pole"] = 1,
+    ["Fist Weapons"] = 1,
+    ["One-Handed Axes"] = 1,
+    ["One-Handed Maces"] = 1,
+    ["One-Handed Swords"] = 1,
+    ["Polearms"] = 1,
+    ["Staves"] = 1,
+    ["Thrown"] = 1,
+    ["Two-Handed Axes"] = 1,
+    ["Two-Handed Maces"] = 1,
+    ["Two-Handed Swords"] = 1,
+    ["Wands"] = 1,
+
+    -- Other Passthroughs
+    ["Bag"] = 1,
+    ["Key"] = 1,
+    ["Reagent"] = 1,
+    ["Arrow"] = 1,
+    ["Bullet"] = 1,
+    ["Book"] = 1,
+    ["Quest"] = 1,
+    ["Devices"] = 1,
+    ["Explosives"] = 1,
+    ["Parts"] = 1,
+    ["Miscellaneous"] = 1,
+    
+    -- Global Fallback
     ["Misc"] = 1
 }
 
@@ -53,6 +107,11 @@ local validSubs = {
 -- =============================================================
 --  HELPER FUNCTIONS
 -- =============================================================
+
+local function RGBToHex(r, g, b)
+    r = r or 1.0; g = g or 1.0; b = b or 1.0;
+    return string.format("|cff%02x%02x%02x", r * 255, g * 255, b * 255)
+end
 
 local function Print(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cff00ccff[BankRouter]|r " .. msg)
@@ -82,105 +141,207 @@ local function GetItemNameFromLink(link)
     return name
 end
 
-local function FindItemLink(targetName)
-    for bag = 0, 4 do
-        for slot = 1, GetContainerNumSlots(bag) do
-            -- GetTexture is return value #1 from GetContainerItemInfo
-            local texture, _, _ = GetContainerItemInfo(bag, slot)
-            
-            if texture then
-                local link = GetContainerItemLink(bag, slot)
-                if link then
-                    local name = GetItemNameFromLink(link)
-                    if name == targetName then
-                        -- Return BOTH the link and the texture we found
-                        return link, texture, bag, slot
+function FindItemId(name)
+    -- 1. Attempt to resolve the name to an ID using the new database
+    local id = nil
+    if BankRouterItemDB then
+        id = BankRouterItemDB[name]
+    end
+    if (not id) then
+        for bag = 0, 4 do
+            for slot = 1, GetContainerNumSlots(bag) do
+
+                local texture = GetContainerItemInfo(bag, slot)
+                
+                if texture then
+                    local link = GetContainerItemLink(bag, slot)
+                    if link and GetItemNameFromLink(link) == name then
+                        local _, _, idStr = string.find(link, "item:(%d+)")
+                        id=tonumber(idStr)
                     end
                 end
             end
         end
     end
-    return nil, nil, nil ,nil
+
+    return id
 end
 
-local function DetectSmartSubCategory(name, texture, type)
-    if not name or not texture then return nil end
+local function GetLinkFromID(id)
+    if not id then return nil end
     
-    local n = string.lower(name)
-    local tex = string.lower(texture)
+    -- Get name and quality from the API
+    local name, _, rarity = GetItemInfo(id)
     
-    if string.find(tex, "fabric") or string.find(tex, "cloth") or string.find(n, "cloth") then
-        return "Cloth"
+    if name then
+        -- Get the hex color code for the quality (e.g., Blue = 0070dd)
+        local r, g, b = GetItemQualityColor(rarity)
+        local hex=RGBToHex(r, g, b)
         
-    elseif (string.find(tex, "stone") or string.find(n, "stone")) and (( not (string.find(tex, "gem"))) or (not (string.find(n, "moon")))) then
-        return "Stone"
-
-    elseif string.find(n, "ore") or string.find(tex, "ore") or string.find(tex, "bar") or string.find(n, "bar") then
-        return "Metal"
-    
-    elseif string.find(n, "meat") or string.find(tex, "meat") then
-        return "Meat"
-        
-    elseif string.find(tex, "leather") or string.find(n, "leather") or string.find(n, "hide") or string.find(n, "scale") then
-        return "Leather"
-        
-    elseif string.find(tex, "herb") or string.find(tex, "flower") then
-        return "Herb"
-        
-    elseif type=="Trade Goods" and (string.find(tex, "gem") or string.find(tex, "moonstone") or string.find(tex, "crystal") or string.find(n, "gem") or string.find(n, "moonstone") or string.find(n, "crystal")) then
-        return "Gem"
-        
-    elseif string.find(tex, "dust") or string.find(tex, "essence") or string.find(tex, "shard") then
-        return "Enchanting"
-        
-    elseif string.find(tex, "potion") or string.find(tex, "elixir") or string.find(tex, "flask") or string.find(n, "potion") or string.find(n, "elixir") or string.find(n, "flask") then
-        return "Potion"
-    
-    elseif type~="Consumable" and (string.find(tex, "scroll") or string.find(tex, "note")) then
-        return "Recipe"
+        -- Construct the full clickable Hyperlink
+        -- Format: |c<Color>|H<ItemString>|h[<Name>]|h|r
+        return string.format("%s|Hitem:%d:0:0:0|h[%s]|h|r", hex, id, name)
+    else
+        -- Fallback if item is not in cache (return just the raw string or nil)
+        return "item:"..id..":0:0:0"
     end
-    
-    return "Misc"
 end
 
-
-local function IsItemSoulbound(name)
-    local _, _, bag, slot = FindItemLink(name)
-    BR_Scanner:ClearLines()
-    BR_Scanner:SetBagItem(bag, slot)
-    
-    -- Scan the first 5 lines (Soulbound status is always at the top)
-    for i = 1, 5 do
-        local textLeft = _G["BankRouterScannerTextLeft"..i]
-        if textLeft then
-            local text = textLeft:GetText()
-            -- Check for the global string (Localized) or the hardcoded English word
-            if text and (text == ITEM_BIND_ON_PICKUP or text == "Soulbound" or text == "Quest Item") then
-                return true
-            end
+local function stringContains(target, ...)
+    for i = 1, arg.n do
+        if string.find(target, arg[i]) then
+            return true
         end
     end
     return false
 end
 
+local function DetectSmartSubCategory(name, texture, type, realSubType)
+    if not name or not texture then return nil end
+    
+    local n = string.lower(name)
+    local tex = string.lower(texture)
+    local sub = realSubType and string.lower(realSubType) or ""
+
+    if stringContains(sub, "bag", "key", "reagent", "arrow", "book", "bullet", "quest", 
+        "devices", "explosives", "parts", "bows", "crossbows", "daggers", "guns", 
+        "fishing pole", "fist weapons", "miscellaneous", "shields", "idols", "librams", "totems",
+        "one-handed axes", "one-handed maces", "one-handed swords", 
+        "polearms", "staves", "thrown", 
+        "two-handed axes", "two-handed maces", "two-handed swords", "wands") then
+        return realSubType
+    
+    elseif type == "Recipe" and stringContains(sub, "alchemy", "blacksmithing", "cooking", "enchanting", "engineering", "first aid", "leatherworking", "tailoring") then
+        return realSubType .. " Recipe"
+
+    elseif type == "Armor" then
+        if stringContains(sub, "cloth", "leather", "mail", "plate") then
+            return realSubType .. " Armor"
+        end
+
+        return "Misc Armor"
+
+    elseif type == "Consumable" then
+        if stringContains(n, "bandage") then
+            return "Bandage"
+
+        elseif stringContains(tex, "stone_sharpening") or stringContains(n, "weightstone", "sharpening", "weapon oil") then
+            return "Item Enhancement"
+
+        elseif stringContains(tex, "potion", "elixir", "flask") or stringContains(n, "potion", "elixir", "flask") then
+            return "Potion"
+            
+        elseif stringContains(tex, "scroll") or stringContains(n, "scroll") then
+            return "Scroll"
+
+        elseif stringContains(tex, "fish") then 
+            return "Fish"
+
+        elseif stringContains(tex, "food", "meat", "fish", "bread", "cheese", "misc_bowl") then
+            return "Food"
+         
+        elseif stringContains(tex, "drink", "water", "juice", "tea") then
+            return "Drink"
+        end
+
+        return "Misc Consumable"
+    elseif type == "Trade Goods" then
+        
+        -- A. Cloth (Prioritize specific fabrics)
+        if stringContains(tex, "fabric", "cloth", "bolt") or stringContains(n, "cloth", "bolt", "weave", "linen", "wool", "silk", "mageweave", "runecloth", "felcloth") then
+            return "Cloth"
+        
+        -- B. Enchanting (Check this BEFORE Gems to catch 'Nexus Crystal' or 'Large Brilliant Shard')
+        elseif stringContains(tex, "dust", "essence", "shard") or stringContains(n, "dust", "essence", "shard", "nexus crystal") then
+            return "Enchanting Material"
+
+        -- C. Herbs
+        elseif stringContains(tex, "herb", "flower") or stringContains(n, "lotus", "bloom", "weed", "root", "leaf", "grass", "kelp", "mushroom", "fungus") then
+            return "Herb"
+
+        -- D. Leather / Skins
+        elseif stringContains(tex, "leather") or stringContains(n, "leather", "hide", "scale", "pelt") then
+            return "Leather"
+
+        -- E. Metals / Mining
+        elseif stringContains(n, "ore", "bar", "bronze", "iron", "mithril", "thorium", "copper", "silver", "gold", "truesilver", "arcanite") or stringContains(tex, "ore", "bar") then
+            return "Metal"
+
+        -- F. Elementals (Volatiles, Essences, Hearts, Globes)
+        elseif stringContains(tex, "fire", "nature", "frost", "shadow") or stringContains(n, "elemental", "volatile", "essence of", "heart of", "globe of", "core of", "breath of") then
+            return "Elemental"
+
+        -- G. Gems (Expanded list)
+        elseif stringContains(tex, "gem") or stringContains(n, "gem", "moonstone", "crystal", "emerald", "ruby", "sapphire", "opal", "diamond", "pearl", "garnet", "jade", "agate", "citrine") then
+            return "Gem"
+
+        -- H. Stone (Strict filtering to avoid Hearthstones or Sharpening stones)
+        elseif (stringContains(tex, "stone") or stringContains(n, "stone", "rock")) and not stringContains(tex, "gem") and not stringContains(n, "moon", "hearth", "sharpening", "weight") then
+            return "Stone"
+
+        -- I. Cooking Ingredients (Meat, Eggs, Spices)
+        elseif stringContains(n, "meat", "egg", "flesh", "spider", "spice", "seasoning") or stringContains(tex, "meat", "egg", "fish") then
+            return "Cooking Ingredient"
+            
+        -- J. Engineering Parts (Catch-all for tubes, blasting powder, etc.)
+        elseif stringContains(n, "tube", "trigger", "powder", "dynamite", "bomb", "casing", "gear", "gyro", "plug", "converter", "battery") then
+            return "Engineering Parts"
+        end
+
+        return "Misc Trade Goods"
+    end
+
+    -- 5. Fallback
+    return "Misc"
+end
+
+
+local function IsItemSoulbound(id)
+    if not id then return false end
+
+    -- 1. Check if the item is in the local cache
+    local name, _ = GetItemInfo(id)
+    if not name then 
+        -- If the item isn't cached, we can't determine its binding status yet
+        return false 
+    end
+
+    -- 2. Clear and set the tooltip using the Item ID
+    BR_Scanner:ClearLines()
+    local _, _, cleanLink = string.find(GetLinkFromID(id), "|H(.+)|h")
+    BR_Scanner:SetHyperlink(cleanLink)
+
+    -- 3. Scan the tooltip lines for the BoP text
+    for i = 1, BR_Scanner:NumLines() do
+        local line = _G["BankRouterScannerTextLeft"..i]
+        if line then
+            local text = line:GetText()
+            -- ITEM_BIND_ON_PICKUP is a global localized string ("Binds when picked up")
+            if text and (text == ITEM_BIND_ON_PICKUP or text == "Soulbound" or text == "Quest Item") then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
 --returns link, type, subType, soulbound, id, rarity, level, minlevel, stackCount, equipLoc, texture, sellPrice
 local function GetItemDetails(name)
-    -- 1. Scan bags to get Link AND Texture
-    local link, bagTexture = FindItemLink(name)
-    if not link then return nil, nil, nil end
 
-    -- 2. Extract ID
-    local _, _, id = string.find(link, "item:(%d+)")
+    local id = FindItemId(name)
     if not id then return nil, nil, nil end
 
-    -- 3. Get Info
     local _, _, rarity, level, type, realSubType, stackSize, equipLoc, texture = GetItemInfo(id)
-    local soulbound = IsItemSoulbound(name)
+
+    local link = GetLinkFromID(id)
+
+    local soulbound = IsItemSoulbound(id)
     -- 4. === HEURISTIC REFINEMENT ===
     -- Only run heuristics if it's a generic "Trade Good" to avoid misclassifying Armor/Weapons
     local subType = "undefined"
-    if type and bagTexture then
-        local detected = DetectSmartSubCategory(name, bagTexture, type)
+    if type and texture then
+        local detected = DetectSmartSubCategory(name, texture, type, realSubType)
         if detected then
             subType = detected
         end
@@ -216,10 +377,6 @@ local function DebugItemInfo(name)
     Debug("-------------------------------------------")
 end
 
-local function RGBToHex(r, g, b)
-    r = r or 1.0; g = g or 1.0; b = b or 1.0;
-    return string.format("|cff%02x%02x%02x", r * 255, g * 255, b * 255)
-end
 
 local function GetRecipientColor(name)
     local hex = "|cff888888" -- Default: Gray
@@ -781,22 +938,17 @@ local function CreateMinimapButton()
     UpdatePosition()
 end
 
--- =============================================================
---  LOAD EVENT
--- =============================================================
-
 BR:SetScript("OnEvent", function()
     if event == "ADDON_LOADED" and arg1 == AddonName then
         if not BankRouterDB then BankRouterDB = {} end
         if not BankRouterDB.routes then BankRouterDB.routes = {} end
         if not BankRouterDB.minimapPos then BankRouterDB.minimapPos = 45 end
         if not BankRouterDB.autoSend then BankRouterDB.autoSend = true end
-        if not BankRouterDB.debug then BankRouterDB.debug = false end
-        
+        if not BankRouterDB.debug then BankRouterDB.debug = false end 
         CreateConfigFrame()
         CreateMinimapButton()
         CreateMailboxButton()
-        InitHooks() -- Activate the Shift+Click hook
+        InitHooks()
         Print("Loaded.")
     end
 end)
