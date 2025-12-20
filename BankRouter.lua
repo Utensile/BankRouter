@@ -877,7 +877,7 @@ local function CreateConfigFrame()
         end
 
         if useCat or useSub then
-            if(!type and !subType) then
+            if((not type) and (not subType)) then
                 if(useCat and validCats[inputName]) then type=inputName end
                 if(useSub and validSubs[inputName]) then subType=inputName end
             end
