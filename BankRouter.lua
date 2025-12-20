@@ -862,26 +862,28 @@ local function CreateConfigFrame()
             Print("Error: Need Item Name and Recipient.")
             return
         end
-
+        local link, type, subType, soulbound = GetItemDetails(inputName)
         -- Check soulbound only if it's NOT a category/subcategory rule
         if not useCat and not useSub then
-             local _, _, _, soulbound = GetItemDetails(inputName)
+            if not link then
+                Print("Error: Item not Found.")
+                return
+            end
              if soulbound then
                 Print("Error: Item is Soulbound.")
                 return
-             end
+            end
+             
         end
 
         if useCat or useSub then
-            -- Note: We trust the text input here because it likely came from the menu click
-            -- But we still run a sanity check on the tables
-            local type, subType = nil, nil
-            
-            if(useCat and validCats[inputName]) then type=inputName end
-            if(useSub and validSubs[inputName]) then subType=inputName end
+            if(!type and !subType) then
+                if(useCat and validCats[inputName]) then type=inputName end
+                if(useSub and validSubs[inputName]) then subType=inputName end
+            end
 
             if ((not type) and useCat) or ((not subType) and useSub) then
-                Print("Error: '"..inputName.."' is not a valid Category/Subcategory.")
+                Print("Error: '"..inputName.." type: ".. type .."subType: "..subType.."' is not a valid Category/Subcategory.")
                 return
             end
 
