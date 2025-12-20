@@ -2,9 +2,9 @@
 ## Title: BankRouter
 ## Notes: Automatically routes items to bank alts.
 ## Author: Utensile
-## Version: 2.2.1
+## Version: 2.2.4
 ## SavedVariables: BankRouterDB
 ## OptionalDeps: TurtleMail, Prat
 
-BankRouter.lua
 BankRouter_Data.lua
+BankRouter.lua

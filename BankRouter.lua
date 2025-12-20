@@ -7,101 +7,20 @@ BR:RegisterEvent("ADDON_LOADED")
 local BR_Scanner = CreateFrame("GameTooltip", "BankRouterScanner", nil, "GameTooltipTemplate")
 BR_Scanner:SetOwner(WorldFrame, "ANCHOR_NONE")
 
-local validCats = {
-    -- Standard Types
-    ["Trade Goods"] = 1,
-    ["Consumable"] = 1,
-    ["Reagent"] = 1,
-    ["Armor"] = 1,
-    ["Weapon"] = 1,
-    ["Container"] = 1,
-    ["Quiver"] = 1,
-    ["Projectile"] = 1,
-    ["Quest"] = 1,
-    ["Key"] = 1,
-    ["Recipe"] = 1,  
-    ["Miscellaneous"] = 1
-}
+local validCats = {}
+local validSubs = {}
 
-local validSubs = {
-    -- Trade Goods (Custom Categories)
-    ["Cloth"] = 1,
-    ["Metal"] = 1,
-    ["Elemental"] = 1,
-    ["Leather"] = 1,
-    ["Herb"] = 1,
-    ["Gem"] = 1,
-    ["Stone"] = 1,
-    ["Enchanting Material"] = 1,
-    ["Cooking Ingredient"] = 1,
-    ["Engineering Parts"] = 1,
-    ["Misc Trade Goods"] = 1,
+for _, catEntry in ipairs(BankRouterData) do
+    validCats[catEntry.name] = 1
 
-    -- Consumables (Custom Categories)
-    ["Fish"] = 1,
-    ["Food"] = 1,
-    ["Drink"] = 1,
-    ["Potion"] = 1,
-    ["Scroll"] = 1,
-    ["Bandage"] = 1,
-    ["Item Enhancement"] = 1,
-    ["Misc Consumable"] = 1,
+    if catEntry.subs then
+        for _, subName in ipairs(catEntry.subs) do
+            validSubs[subName] = 1
+        end
+    end
+end
 
-    -- Armor (Custom & Passthrough)
-    ["Cloth Armor"] = 1,
-    ["Leather Armor"] = 1,
-    ["Mail Armor"] = 1,
-    ["Plate Armor"] = 1,
-    ["Misc Armor"] = 1,
-    ["Shields"] = 1,
-    ["Idols"] = 1,
-    ["Librams"] = 1,
-    ["Totems"] = 1,
-
-    -- Recipes (concatenated)
-    ["Alchemy Recipe"] = 1,
-    ["Blacksmithing Recipe"] = 1,
-    ["Cooking Recipe"] = 1,
-    ["Enchanting Recipe"] = 1,
-    ["Engineering Recipe"] = 1,
-    ["First Aid Recipe"] = 1,
-    ["Leatherworking Recipe"] = 1,
-    ["Tailoring Recipe"] = 1,
-
-    -- Weapons (Passthrough)
-    ["Bows"] = 1,
-    ["Crossbows"] = 1,
-    ["Daggers"] = 1,
-    ["Guns"] = 1,
-    ["Fishing Pole"] = 1,
-    ["Fist Weapons"] = 1,
-    ["One-Handed Axes"] = 1,
-    ["One-Handed Maces"] = 1,
-    ["One-Handed Swords"] = 1,
-    ["Polearms"] = 1,
-    ["Staves"] = 1,
-    ["Thrown"] = 1,
-    ["Two-Handed Axes"] = 1,
-    ["Two-Handed Maces"] = 1,
-    ["Two-Handed Swords"] = 1,
-    ["Wands"] = 1,
-
-    -- Other Passthroughs
-    ["Bag"] = 1,
-    ["Key"] = 1,
-    ["Reagent"] = 1,
-    ["Arrow"] = 1,
-    ["Bullet"] = 1,
-    ["Book"] = 1,
-    ["Quest"] = 1,
-    ["Devices"] = 1,
-    ["Explosives"] = 1,
-    ["Parts"] = 1,
-    ["Miscellaneous"] = 1,
-    
-    -- Global Fallback
-    ["Misc"] = 1
-}
+local BankRouterMenuState = {}
 
 
 -- =============================================================
@@ -133,6 +52,15 @@ local function Wait(seconds, callback)
             if callback then callback() end  -- Run the code
         end
     end)
+end
+
+local function FormattedText(text)
+    if not text or text == "" then return text end
+    
+    local first = string.upper(string.sub(text, 1, 1))
+    local rest = string.lower(string.sub(text, 2))
+
+    return first .. rest
 end
 
 local function GetItemNameFromLink(link)
@@ -292,7 +220,7 @@ local function DetectSmartSubCategory(name, texture, type, realSubType)
     end
 
     -- 5. Fallback
-    return "Misc"
+    return "Miscellaneous"
 end
 
 
@@ -312,12 +240,12 @@ local function IsItemSoulbound(id)
     BR_Scanner:SetHyperlink(cleanLink)
 
     -- 3. Scan the tooltip lines for the BoP text
-    for i = 1, BR_Scanner:NumLines() do
+    for i = 2, math.min(3, BR_Scanner:NumLines()) do
         local line = _G["BankRouterScannerTextLeft"..i]
         if line then
             local text = line:GetText()
             -- ITEM_BIND_ON_PICKUP is a global localized string ("Binds when picked up")
-            if text and (text == ITEM_BIND_ON_PICKUP or text == "Soulbound" or text == "Quest Item") then
+            if text and (text == ITEM_BIND_ON_PICKUP or text == ITEM_BIND_QUEST or text == ITEM_SOULBOUND) then
                 return true
             end
         end
@@ -326,7 +254,7 @@ local function IsItemSoulbound(id)
     return false
 end
 
---returns link, type, subType, soulbound, id, rarity, level, minlevel, stackCount, equipLoc, texture, sellPrice
+--returns link, type, subType, soulbound, id, rarity, level, realSubType, stackSize, equipLoc, texture
 local function GetItemDetails(name)
 
     local id = FindItemId(name)
@@ -418,6 +346,7 @@ local function ColorText(text, colorType)
     return text
 end
 
+
 -- =============================================================
 --  LOGIC
 -- =============================================================
@@ -425,14 +354,12 @@ end
 local function InitHooks()
     Debug("INIT HOOKS STARTED")
 
-    -- 1. Save the original function so we don't break the game when the window is closed
+    -- 1. Hook ContainerFrameItemButton_OnClick (Your existing Click Hook)
     if not BR_Orig_ContainerFrameItemButton_OnClick then
         BR_Orig_ContainerFrameItemButton_OnClick = ContainerFrameItemButton_OnClick
     end
 
-    -- 2. Define the new function (Standard Left Click Hook)
     ContainerFrameItemButton_OnClick = function(button, ignoreShift)
-        Debug("CLICK DETECTED - ".. button)
         if(IsShiftKeyDown() and button == "LeftButton") then
             if(BankRouterDB.debug) then
                 local bag = this:GetParent():GetID()
@@ -444,28 +371,53 @@ local function InitHooks()
                 end
             end
             if BankRouterFrame and BankRouterFrame:IsVisible() then
-                -- Get the item info from the button that was clicked
                 local bag = this:GetParent():GetID()
                 local slot = this:GetID()
                 local link = GetContainerItemLink(bag, slot)
                 if link then
                     local name = GetItemNameFromLink(link)
                     if name then
-                        -- Update the Input Field
                         BankRouterItemInput:SetText(name)
-                        -- Move focus to Recipient field for faster entry
                         BankRouterRecInput:SetFocus()
                         Debug("Auto-filled: " .. name)
-                        
-                        -- CRITICAL: Return here to BLOCK the item from being picked up
                         return 
                     end
                 end
             end
         end
-        -- 3. If the window wasn't open (or it wasn't a left click), run the original code
         if BR_Orig_ContainerFrameItemButton_OnClick then
             BR_Orig_ContainerFrameItemButton_OnClick(button, ignoreShift)
+        end
+    end
+
+    -- 2. NEW: Hook GameTooltip.SetBagItem (Specific for Vanilla 1.12)
+    -- We hook the method directly on the object table
+    if not BR_Orig_SetBagItem then
+        BR_Orig_SetBagItem = GameTooltip.SetBagItem
+    end
+
+    GameTooltip.SetBagItem = function(self, bag, slot)
+        -- 1. Run the original function first so the item appears
+        if BR_Orig_SetBagItem then
+            BR_Orig_SetBagItem(self, bag, slot)
+        end
+
+        -- 2. Run our custom logic using the Bag/Slot arguments
+        local link = GetContainerItemLink(bag, slot)
+        if link then
+            local name = GetItemNameFromLink(link)
+            if name then
+                local _, type, subType, _, _, _, _, _, stackSize= GetItemDetails(name)
+                
+                if type or subType then
+                    self:AddLine(" ") -- Spacing
+                    if type and subType then
+                        self:AddLine(ColorText(type, "cat") .. ": " .. ColorText(subType, "sub"))
+                    end
+                    -- Force update
+                    self:Show()
+                end
+            end
         end
     end
 end
@@ -677,9 +629,9 @@ end
 -- =============================================================
 
 local function CreateConfigFrame()
-    -- 1. Main Frame
+    -- 1. Main Frame (Widened to 600 to accommodate side menu)
     local f = CreateFrame("Frame", "BankRouterFrame", UIParent)
-    f:SetWidth(380) -- Widened for new checkboxes
+    f:SetWidth(600) 
     f:SetHeight(500)
     f:SetPoint("CENTER", UIParent, "CENTER")
     f:SetBackdrop({
@@ -695,91 +647,211 @@ local function CreateConfigFrame()
     f:SetScript("OnDragStop", function() f:StopMovingOrSizing() end)
     f:Hide()
 
+    -- Title
     local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     title:SetPoint("TOP", f, "TOP", 0, -15)
     title:SetText("BankRouter Config")
-    
-    local subtitle = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    subtitle:SetPoint("TOP", title, "BOTTOM", 0, -5)
-    subtitle:SetText("(Shift+Click an item to use as template)")
 
     local closeBtn = CreateFrame("Button", nil, f, "UIPanelCloseButton")
     closeBtn:SetPoint("TOPRIGHT", f, "TOPRIGHT", -5, -5)
 
-    -- 2. Input Fields
+    -- =============================================================
+    --  LEFT SIDE: CATEGORY MENU
+    -- =============================================================
+    
+    -- Menu Background container
+    local menuBg = CreateFrame("Frame", nil, f)
+    menuBg:SetWidth(190)
+    menuBg:SetPoint("TOPLEFT", f, "TOPLEFT", 15, -40)
+    menuBg:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 15, 15)
+    menuBg:SetBackdrop({
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 16,
+        insets = { left = 4, right = 4, top = 4, bottom = 4 }
+    })
+    menuBg:SetBackdropColor(0, 0, 0, 0.5)
+
+    -- Menu Scroll Frame
+    local menuScroll = CreateFrame("ScrollFrame", "BankRouterMenuScroll", menuBg, "UIPanelScrollFrameTemplate")
+    menuScroll:SetPoint("TOPLEFT", menuBg, "TOPLEFT", 5, -5)
+    menuScroll:SetPoint("BOTTOMRIGHT", menuBg, "BOTTOMRIGHT", -26, 5)
+
+    local menuContent = CreateFrame("Frame", nil, menuScroll)
+    menuContent:SetWidth(160)
+    menuContent:SetHeight(400) -- Will update dynamically
+    menuScroll:SetScrollChild(menuContent)
+
+    -- Function to Draw the Tree View
+    local function UpdateMenu()
+        -- Clear existing children
+        local kids = {menuContent:GetChildren()}
+        for _, child in ipairs(kids) do child:Hide() end
+
+        local yOffset = 0
+        
+        -- === ITERATE THE MASTER DATA STRUCTURE ===
+        for _, cat in ipairs(BankRouterData) do
+            if cat.subs then
+                -- 1. Parent Button
+                local btn = CreateFrame("Button", nil, menuContent)
+                btn:SetWidth(160)
+                btn:SetHeight(20)
+                btn:SetPoint("TOPLEFT", menuContent, "TOPLEFT", 0, yOffset)
+                
+                local text = btn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+                text:SetPoint("LEFT", btn, "LEFT", 5, 0)
+                
+                local hasSubs = (table.getn(cat.subs) > 0)
+                local prefix = ""
+                if hasSubs then
+                    prefix = BankRouterMenuState[cat.name] and "[-] " or "[+] "
+                else
+                    prefix = "    " -- Indent if no children
+                end
+
+                text:SetText(prefix .. cat.name)
+                btn:SetScript("OnEnter", function() text:SetTextColor(0.33, 1, 0.33) end)
+                btn:SetScript("OnLeave", function() text:SetTextColor(1, 0.82, 0) end)
+
+                -- === FIX: STORE DATA ON THE ELEMENT ===
+                btn.catName = cat.name
+                btn.hasSubs = hasSubs
+
+                btn:SetScript("OnClick", function()
+                    -- Retrieve data from 'this' (the button clicked)
+                    local cName = this.catName
+                    
+                    -- Update Input Fields
+                    if(IsShiftKeyDown()) then
+                        BankRouterItemInput:SetText(cName)
+                        BankRouterCatCheck:SetChecked(true)
+                        BankRouterSubCatCheck:SetChecked(false)
+                    elseif this.hasSubs then
+                        BankRouterMenuState[cName] = not BankRouterMenuState[cName]
+                        UpdateMenu()
+                    end
+                end)
+                
+                yOffset = yOffset - 20
+
+                -- 2. Children (if expanded)
+                if hasSubs and BankRouterMenuState[cat.name] then
+                    for _, sub in ipairs(cat.subs) do
+                        local subBtn = CreateFrame("Button", nil, menuContent)
+                        subBtn:SetWidth(160)
+                        subBtn:SetHeight(16)
+                        subBtn:SetPoint("TOPLEFT", menuContent, "TOPLEFT", 15, yOffset)
+                        
+                        local subText = subBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+                        subText:SetPoint("LEFT", subBtn, "LEFT", 0, 0)
+                        subText:SetText(sub)
+                        
+                        -- === FIX: STORE DATA ON THE ELEMENT ===
+                        subBtn.subName = sub
+
+                        subBtn:SetScript("OnClick", function()
+                            BankRouterItemInput:SetText(this.subName)
+                            BankRouterCatCheck:SetChecked(false)
+                            BankRouterSubCatCheck:SetChecked(true)
+                        end)
+                        
+                        subBtn:SetScript("OnEnter", function() subText:SetTextColor(0.33, 1, 0.33) end)
+                        subBtn:SetScript("OnLeave", function() subText:SetTextColor(1, 1, 1) end)
+
+                        yOffset = yOffset - 16
+                    end
+                end
+            end
+        end
+        menuContent:SetHeight(math.abs(yOffset) + 20)
+    end
+
+    -- =============================================================
+    --  RIGHT SIDE: CONFIGURATION
+    -- =============================================================
+
+    local rightStart = 220 -- X offset where the right pane starts
+
+   -- 1. Inputs
     local itemInput = CreateFrame("EditBox", "BankRouterItemInput", f, "InputBoxTemplate")
-    itemInput:SetWidth(150)
+    itemInput:SetWidth(200)
     itemInput:SetHeight(20)
-    itemInput:SetPoint("TOPLEFT", f, "TOPLEFT", 25, -60)
+    itemInput:SetPoint("TOPLEFT", f, "TOPLEFT", rightStart, -60)
     itemInput:SetAutoFocus(false)
     
     local itemLabel = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     itemLabel:SetPoint("BOTTOMLEFT", itemInput, "TOPLEFT", -5, 4)
-    itemLabel:SetText("Item Name")
+    itemLabel:SetText("Item / Category Name")
 
     local recInput = CreateFrame("EditBox", "BankRouterRecInput", f, "InputBoxTemplate")
-    recInput:SetWidth(120)
+    recInput:SetWidth(140)
     recInput:SetHeight(20)
-    recInput:SetPoint("LEFT", itemInput, "RIGHT", 20, 0)
+    recInput:SetPoint("LEFT", itemInput, "RIGHT", 15, 0)
     recInput:SetAutoFocus(false)
 
     local recLabel = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     recLabel:SetPoint("BOTTOMLEFT", recInput, "TOPLEFT", -5, 4)
     recLabel:SetText("Recipient Name")
 
-    -- 3. NEW CHECKBOXES (Categories)
+    -- 2. Checkboxes (Categories)
     local catCB = CreateFrame("CheckButton", "BankRouterCatCheck", f, "UICheckButtonTemplate")
+    -- Anchor directly below ItemInput
     catCB:SetPoint("TOPLEFT", itemInput, "BOTTOMLEFT", -5, -10)
     _G[catCB:GetName().."Text"]:SetText("Set Category")
-    _G[catCB:GetName().."Text"]:SetTextColor(0, 1, 0) -- Green Text
+    _G[catCB:GetName().."Text"]:SetTextColor(0, 1, 0) 
 
     local subCatCB = CreateFrame("CheckButton", "BankRouterSubCatCheck", f, "UICheckButtonTemplate")
-    subCatCB:SetPoint("LEFT", catCB, "RIGHT", 160, 0)
+    subCatCB:SetPoint("LEFT", catCB, "RIGHT", 150, 0)
     _G[subCatCB:GetName().."Text"]:SetText("Set Subcategory")
-    _G[subCatCB:GetName().."Text"]:SetTextColor(0.4, 0.8, 1) -- Light Blue Text
-    
+    _G[subCatCB:GetName().."Text"]:SetTextColor(0.4, 0.8, 1) 
 
-    
-    -- Init state
-    _G[BankRouterSubCatCheck:GetName().."Text"]:SetTextColor(0.4, 0.8, 1)
+    -- 3. Add Button (In the Middle)
+    local addBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+    addBtn:SetWidth(150) 
+    addBtn:SetHeight(25)
+    -- Anchored below the Cat Checkbox
+    addBtn:SetPoint("TOPLEFT", catCB, "BOTTOMLEFT", 5, -5)
+    addBtn:SetText("Add / Update Rule")
 
-
-    -- 4. Global Settings (Auto Send / Debug)
+    -- 4. Global Settings (Below the Add Button)
     local autoSendCB = CreateFrame("CheckButton", "BankRouterAutoSendCheck", f, "UICheckButtonTemplate")
-    autoSendCB:SetPoint("TOPLEFT", catCB, "BOTTOMLEFT", 0, -10)
+    -- Anchored below the Add Button
+    autoSendCB:SetPoint("TOPLEFT", addBtn, "BOTTOMLEFT", -5, -10)
     _G[autoSendCB:GetName().."Text"]:SetText("Auto Send")
     autoSendCB:SetChecked(BankRouterDB.autoSend)
     autoSendCB:SetScript("OnClick", function() BankRouterDB.autoSend = this:GetChecked() end)
 
     local debugCB = CreateFrame("CheckButton", "BankRouterDebugCheck", f, "UICheckButtonTemplate")
-    debugCB:SetPoint("LEFT", autoSendCB, "RIGHT", 100, 0)
+    debugCB:SetPoint("LEFT", autoSendCB, "RIGHT", 150, 0)
     _G[debugCB:GetName().."Text"]:SetText("Debug Mode")
     debugCB:SetChecked(BankRouterDB.debug)
     debugCB:SetScript("OnClick", function() BankRouterDB.debug = this:GetChecked() end)
 
-
-    -- 5. Add/Update Button
-    local addBtn = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-    addBtn:SetWidth(250)
-    addBtn:SetHeight(25)
-    addBtn:SetPoint("TOP", f, "TOP", 0, -160)
-    addBtn:SetText("Add / Update Rule")
-
-    -- 6. Scroll List
+    -- 5. Scroll List (Below everything)
     local scrollFrame = CreateFrame("ScrollFrame", "BankRouterConfigScrollFrame", f, "UIPanelScrollFrameTemplate")
-    scrollFrame:SetPoint("TOPLEFT", f, "TOPLEFT", 15, -200)
+    -- Anchor below the AutoSend Checkbox to ensure no overlap
+    scrollFrame:SetPoint("TOPLEFT", autoSendCB, "BOTTOMLEFT", 0, -20)
     scrollFrame:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -35, 15)
     
     local scrollChild = CreateFrame("Frame", nil, scrollFrame)
-    scrollChild:SetWidth(300)
+    scrollChild:SetWidth(330)
     scrollChild:SetHeight(300)
     scrollFrame:SetScrollChild(scrollChild)
+
+    local listHeader = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    listHeader:SetPoint("BOTTOMLEFT", scrollFrame, "TOPLEFT", 0, 5)
+    listHeader:SetText("Current Routes")
 
     -- === ADD BUTTON LOGIC ===
     addBtn:SetScript("OnClick", function()
         local added = false
-        local inputName = itemInput:GetText()
-        local recipient = recInput:GetText()
+
+        local inputName = FormattedText(itemInput:GetText())
+        local recipient = FormattedText(recInput:GetText())
+        itemInput:SetText(inputName)
+        recInput:SetText(recipient)
+
         local useCat = BankRouterCatCheck:GetChecked()
         local useSub = BankRouterSubCatCheck:GetChecked()
 
@@ -788,26 +860,25 @@ local function CreateConfigFrame()
             return
         end
 
-        local _, type, subType, soulbound = GetItemDetails(inputName)
-
-        if soulbound then
-            Print("Error: Item is Soulbound.")
-            return
+        -- Check soulbound only if it's NOT a category/subcategory rule
+        if not useCat and not useSub then
+             local _, _, _, soulbound = GetItemDetails(inputName)
+             if soulbound then
+                Print("Error: Item is Soulbound.")
+                return
+             end
         end
 
         if useCat or useSub then
+            -- Note: We trust the text input here because it likely came from the menu click
+            -- But we still run a sanity check on the tables
+            local type, subType = nil, nil
+            
+            if(useCat and validCats[inputName]) then type=inputName end
+            if(useSub and validSubs[inputName]) then subType=inputName end
 
-            if(useCat and validCats[inputName]) then
-                type=inputName
-            end
-            if(useSub and validSubs[inputName]) then
-                subType=inputName
-            end
-
-            Debug("type: ".. (type or "nil") .. " and subType: "..(subType or "nil"))
-            Debug(tostring(((not type) and useCat) and ((not subType) and useSub)))
             if ((not type) and useCat) or ((not subType) and useSub) then
-                Print("Error: Could not determine category/subcategory. Is '"..inputName.."' a valid category or in your bag?")
+                Print("Error: '"..inputName.."' is not a valid Category/Subcategory.")
                 return
             end
 
@@ -820,13 +891,9 @@ local function CreateConfigFrame()
 
             -- 3. Add Subcategory Rule (Blue)
             if useSub and subType then
-                if subType and subType ~= "" then
-                    BankRouterDB.routes["s:" .. subType] = recipient
-                    added=true
-                    Print("Added Subcat Rule: " .. ColorText(subType, "sub") .. " -> " .. recipient)
-                else
-                    Print("Warning: Item has no subcategory.")
-                end
+                BankRouterDB.routes["s:" .. subType] = recipient
+                added=true
+                Print("Added Subcat Rule: " .. ColorText(subType, "sub") .. " -> " .. recipient)
             end
         else
             -- 4. Default: Specific Item Rule (Yellow)
@@ -837,12 +904,16 @@ local function CreateConfigFrame()
 
         -- Reset & Refresh
         if(added) then
-            itemInput:SetText("")
+            -- Optional: Clear item input or leave it for rapid entry
+            -- itemInput:SetText("") 
         end
         UpdateRouteList(scrollChild)
     end)
 
-    f:SetScript("OnShow", function() UpdateRouteList(scrollChild) end)
+    f:SetScript("OnShow", function() 
+        UpdateRouteList(scrollChild)
+        UpdateMenu() -- Initialize the menu
+    end)
 end
 
 local function CreateMailboxButton()

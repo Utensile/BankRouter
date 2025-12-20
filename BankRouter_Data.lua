@@ -1,4 +1,42 @@
--- Database of Item Names to IDs (Generated via C++)
+BankRouterData = {
+    { 
+        name = "Trade Goods", 
+        subs = {"Cloth", "Metal", "Elemental", "Leather", "Herb", "Gem", "Stone", "Enchanting Material", "Cooking Ingredient", "Engineering Parts", "Misc Trade Goods"} 
+    },
+    { 
+        name = "Consumable", 
+        subs = {"Fish", "Food", "Drink", "Potion", "Scroll", "Bandage", "Item Enhancement", "Misc Consumable"} 
+    },
+    { 
+        name = "Armor", 
+        subs = {"Shields", "Idols", "Librams", "Totems", "Cloth Armor", "Leather Armor", "Mail Armor", "Plate Armor", "Misc Armor"} 
+    },
+    { 
+        name = "Weapon", 
+        subs = {"Bows", "Crossbows", "Daggers", "Guns", "Fishing Pole", "Fist Weapons", "One-Handed Axes", "One-Handed Maces", "One-Handed Swords", "Polearms", "Staves", "Thrown", "Two-Handed Axes", "Two-Handed Maces", "Two-Handed Swords", "Wands"} 
+    },
+    { 
+        name = "Recipe", 
+        subs = {"Alchemy Recipe", "Blacksmithing Recipe", "Cooking Recipe", "Enchanting Recipe", "Engineering Recipe", "First Aid Recipe", "Leatherworking Recipe", "Tailoring Recipe"} 
+    },
+    {   
+        name = "Container", 
+        subs = {"Bag", "Soul Bag", "Herb Bag", "Enchanting Bag", "Engineering Bag", "Gem Bag", "Mining Bag"} 
+    },
+    { 
+        name = "Quiver", 
+        subs = {"Ammo Pouch", "Quiver"}
+    },
+    { 
+        name = "Projectile", 
+        subs = {"Arrow", "Bullet"} 
+    },
+    { name = "Quest", subs = {"Quest"} },
+    { name = "Key", subs = {"Key"} },
+    { name = "Reagent", subs = {"Reagent"} },
+    { name = "Miscellaneous", subs = {"Miscellaneous"} }
+}
+
 BankRouterItemDB = {
     ["Worn Shortsword"] = 25,
     ["Bent Staff"] = 35,
