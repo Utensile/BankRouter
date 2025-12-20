@@ -56,11 +56,14 @@ end
 
 local function FormattedText(text)
     if not text or text == "" then return text end
-    
-    local first = string.upper(string.sub(text, 1, 1))
-    local rest = string.lower(string.sub(text, 2))
 
-    return first .. rest
+    text = string.lower(text)
+
+    local result = string.gsub(text, "(%a)([%w_']*)", function(firstLetter, restOfWord)
+        return string.upper(firstLetter) .. restOfWord
+    end)
+
+    return result
 end
 
 local function GetItemNameFromLink(link)
