@@ -57,11 +57,26 @@ end
 local function FormattedText(text)
     if not text or text == "" then return text end
 
+    local smallWords = {
+        ["of"] = true, ["the"] = true, ["a"] = true, ["an"] = true,
+        ["in"] = true, ["at"] = true, ["on"] = true, ["for"] = true,
+        ["to"] = true, ["up"] = true, ["by"] = true, ["with"] = true,
+        ["and"] = true, ["or"] = true, ["but"] = true, ["from"] = true
+    }
+
     text = string.lower(text)
 
-    local result = string.gsub(text, "(%a)([%w_']*)", function(firstLetter, restOfWord)
-        return string.upper(firstLetter) .. restOfWord
+    local result = string.gsub(text, "(%a)([%w_']*)", function(first, rest)
+        local word = first .. rest
+
+        if smallWords[word] then
+            return word
+        end
+        
+        return string.upper(first) .. rest
     end)
+
+    result = string.gsub(result, "^%l", string.upper)
 
     return result
 end
@@ -142,7 +157,7 @@ local function DetectSmartSubCategory(name, texture, type, realSubType)
         "two-handed axes", "two-handed maces", "two-handed swords", "wands") then
         return realSubType
     
-    elseif type == "Recipe" and stringContains(sub, "alchemy", "blacksmithing", "cooking", "enchanting", "engineering", "first aid", "leatherworking", "tailoring") then
+    elseif type == "Recipe" and stringContains(sub, "alchemy", "blacksmithing", "cooking", "enchanting", "engineering", "first aid", "leatherworking", "tailoring", "jewelcrafting") then
         return realSubType .. " Recipe"
 
     elseif type == "Armor" then
