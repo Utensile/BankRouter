@@ -574,10 +574,11 @@ local function PrepareNextBatch()
             if texture and not locked then
                 local link = GetContainerItemLink(bag, slot)
                 local name = GetItemNameFromLink(link)
+                local id = FindItemId(name)
                 
                 -- === PRIORITY LOOKUP ===
                 local recipient = nil
-                if(not IsItemSoulbound(name)) then
+                if(not IsItemSoulbound(id)) then
                     -- 1. Check Specific Item Rule (Highest Priority)
                     if BankRouterDB.routes[name] then
                         recipient = BankRouterDB.routes[name]
