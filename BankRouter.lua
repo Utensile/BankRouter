@@ -183,7 +183,7 @@ local function DetectSmartSubCategory(name, texture, type, realSubType)
         elseif stringContains(tex, "fish") then 
             return "Fish"
 
-        elseif stringContains(tex, "food", "meat", "fish", "bread", "cheese", "misc_bowl") then
+        elseif stringContains(tex, "food", "mushroom", "meat", "fish", "bread", "cheese", "misc_bowl") then
             return "Food"
          
         elseif stringContains(tex, "drink", "water", "juice", "tea") then
